@@ -1,0 +1,10 @@
+[
+  {
+    "VcenterImageName": "esx-803-vendor1",
+    "VcenterName": "sfo-m01-vc01.sfo.rainpole.io"
+  },
+  {
+    "VcenterImageName": "esx-803-vendor2",
+    "VcenterName": "sfo-w01-vc01.sfo.rainpole.io"
+  }
+]

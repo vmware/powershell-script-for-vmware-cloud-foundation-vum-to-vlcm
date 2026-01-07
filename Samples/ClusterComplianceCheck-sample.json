@@ -1,0 +1,12 @@
+[
+  {
+    "ClusterName": "m01-cl01",
+    "WorkloadDomainName": "m01",
+    "SddcManagerImageName": "esx-803-vendor"
+  },
+  {
+    "ClusterName": "w01-cl01",
+    "WorkloadDomainName": "w01",
+    "SddcManagerImageName": "esx-803-vendor"
+  }
+]

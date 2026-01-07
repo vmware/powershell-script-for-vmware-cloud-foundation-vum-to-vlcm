@@ -1,0 +1,10 @@
+[
+  {
+    "ClusterName": "m01-cl01",
+    "WorkloadDomainName": "m01"
+  },
+  {
+    "ClusterName": "w01-cl01",
+    "WorkloadDomainName": "w01"
+  }
+]
