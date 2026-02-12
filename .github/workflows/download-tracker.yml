@@ -8,7 +8,6 @@ on:
 jobs:
   permissions:
     contents: read
-    pull-requests: write
   count-downloads:
     runs-on: ubuntu-latest
     steps:
