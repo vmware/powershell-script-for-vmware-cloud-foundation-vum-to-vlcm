@@ -4,6 +4,8 @@
 [![License](https://img.shields.io/badge/License-Broadcom-green.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-1.0.0.0.60-orange.svg)](CHANGELOG.md)
 [![GitHub Clones](https://img.shields.io/badge/dynamic/json?color=success&label=Clone&query=count&url=https://gist.githubusercontent.com/nathanthaler/cf28a7a69217ecfa5e5ac5f23fcb37ef/raw/clone.json&logo=github)](https://gist.githubusercontent.com/nathanthaler/cf28a7a69217ecfa5e5ac5f23fcb37ef/raw/clone.json)
+![Downloads](https://img.shields.io/github/downloads/vmware/powershell-script-for-vmware-cloud-foundation-vum-to-vlcm/total?label=Release%20Downloads)
+
 
 
 ## Common features for VCF 9.x and 5.2.x
