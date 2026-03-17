@@ -26,7 +26,7 @@
 #
 # =============================================================================
 #
-# Last modified: 2026-03-09
+# Last modified: 2026-03-17
 #
 # PSScriptAnalyzer: DefaultViServers is the standard PowerCLI variable for connected vCenter sessions; VCF PowerCLI 9 has no Get-VIServer -State.
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidGlobalVars', '', Justification = 'DefaultViServers is the standard PowerCLI variable for connected vCenter sessions.')]
@@ -36,24 +36,38 @@
     Reports whether all ESXi hosts in a cluster have the same set of installed VIBs (homogeneous) or not (heterogeneous).
 
 .DESCRIPTION
+    Usage: .\Get-VcfClusterVibConsistency.ps1 -ClusterName <string> [-Server <string>]
+
     This script assumes you are already connected to vCenter using Connect-VIServer. It does not perform any
     connection or credential handling. Given a cluster name, it collects the list of installed VIBs on each
     ESXi host in that cluster via esxcli software vib list (VCF PowerCLI 9 / Get-EsxCli -V2), then compares
     them. If every host has the identical set of VIBs (by name and version), the script reports
     "homogeneous cluster". If any host has VIBs missing or extra compared to the reference (first host),
-    the script reports "heterogeneous cluster" and lists which hosts differ and their missing/extra VIBs.
+    or the same VIB name with a different version (disjoint versions), the script reports
+    "heterogeneous cluster" and lists which hosts differ and their missing/extra VIBs.
+    Comparison is case-insensitive for VIB names and versions (PowerShell default).
 
 .PARAMETER ClusterName
-    Name of the cluster to analyze. Must match the cluster name as it appears in vCenter.
+    Name of the cluster to analyze. Must match the cluster name as it appears in vCenter. Required.
+
+.PARAMETER LogLevel
+    Minimum severity for console output: DEBUG, INFO, WARNING, or ERROR. Default is INFO. The log file always receives all levels.
 
 .PARAMETER Server
     Optional. vCenter server name (FQDN or IP) to use when multiple VI servers are connected. If omitted,
     the default connection from Connect-VIServer is used (typically the only or most recently connected server).
 
+.INPUTS
+    None. ClusterName, LogLevel, and Server are supplied as parameters.
+
 .OUTPUTS
     Writes "homogeneous cluster" or "heterogeneous cluster" to the pipeline and console, plus host-level
     delta details when heterogeneous. Also returns a PSCustomObject with ClusterName, Homogeneous,
     HostCount, ReferenceHost, and Deltas.
+
+.EXAMPLE
+    Get-Help .\Get-VcfClusterVibConsistency.ps1 -Full
+    Get full usage, parameter descriptions, and examples.
 
 .EXAMPLE
     Connect-VIServer -Server "vcenter.example.com" -User "administrator@vsphere.local" -Password $securePass
@@ -62,11 +76,15 @@
 .EXAMPLE
     .\Get-VcfClusterVibConsistency.ps1 -ClusterName "m01-cl01" -Server "m01-vc01.example.com"
 
+.LINK
+    Get-Help .\Get-VcfClusterVibConsistency.ps1 -Full
+
 .NOTES
     Requires VCF PowerCLI 9 (Get-EsxCli, Get-Cluster, Get-VMHost). You must connect to vCenter with
     Connect-VIServer before running this script. The script does not disconnect the session when finished.
-    VIB identity is based on Name and Version (fallback to Id if Name is missing). The first host in the
-    cluster is used as the reference for comparison.
+    VIB identity is based on Name and Version (fallback to Id if Name is missing). Disjoint names or
+    disjoint versions (same VIB name, different version across hosts) indicate heterogeneity. The first
+    host in the cluster is used as the reference for comparison. Comparison is case-insensitive.
     Logging is written to console and to a log file in the script directory:
     logs\VcfClusterVibConsistency-{yyyy-MM-dd}.log
 #>
@@ -74,12 +92,15 @@
 [CmdletBinding()]
 Param (
     [Parameter(Mandatory = $true)] [ValidateNotNullOrEmpty()] [string]$ClusterName,
+    [Parameter(Mandatory = $false)] [ValidateSet("DEBUG", "INFO", "WARNING", "ERROR")] [string]$LogLevel = "INFO",
     [Parameter(Mandatory = $false)] [ValidateNotNullOrEmpty()] [string]$Server
 )
 
 $ErrorActionPreference = "Stop"
 
-#region Logging
+# Log level hierarchy for filtering console output (lower = more verbose). File always gets all levels.
+$Script:LogLevelHierarchy = @{ "DEBUG" = 0; "INFO" = 1; "WARNING" = 2; "ERROR" = 3 }
+$Script:ConfiguredLogLevel = $LogLevel
 
 $logDirectory = Join-Path -Path $PSScriptRoot -ChildPath "logs"
 if (-not (Test-Path -Path $logDirectory -PathType Container)) {
@@ -94,15 +115,29 @@ if (-not (Test-Path -Path $logDirectory -PathType Container)) {
 $logFileDateStamp = Get-Date -Format "yyyy-MM-dd"
 $Script:LogFilePath = Join-Path -Path $logDirectory -ChildPath "VcfClusterVibConsistency-$logFileDateStamp.log"
 
+Function Test-LogLevel {
+    <#
+        .SYNOPSIS
+        Returns whether a message of the given type should be shown on console per configured log level.
+        .NOTES
+        Message is shown when its level is at or above the configured level (e.g. INFO shows INFO, WARNING, ERROR).
+    #>
+    param(
+        [Parameter(Mandatory = $true)] [string]$MessageType
+    )
+    $messageLevel = $Script:LogLevelHierarchy[$MessageType]
+    $configuredLevelValue = $Script:LogLevelHierarchy[$Script:ConfiguredLogLevel]
+    return ($messageLevel -ge $configuredLevelValue)
+}
+
 Function Write-LogMessage {
 
     <#
         .SYNOPSIS
-        Writes a timestamped log line to the console and appends it to the script log file.
+        Writes a log line to the console (when at or above -LogLevel) and appends a timestamped line to the script log file.
 
         .DESCRIPTION
-        Used for consistent logging. Output is written to the pipeline (console) and, when the log file
-        exists, appended to the script-scoped log file path.
+        Console shows [Type] Message only (no timestamp). Log file always receives [timestamp] [Type] Message. Aligned with SimpleSupervisorDeploymentAtScale.psm1.
 
         .PARAMETER Message
         The message text to log.
@@ -114,7 +149,7 @@ Function Write-LogMessage {
         Write-LogMessage -Type INFO -Message "Starting VIB collection."
 
         .NOTES
-        Depends on $Script:LogFilePath being set. Log file is created by the script before first use.
+        Depends on $Script:LogFilePath and $Script:ConfiguredLogLevel. Log file is created by the script before first use.
     #>
 
     [CmdletBinding()]
@@ -124,13 +159,21 @@ Function Write-LogMessage {
     )
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $logLine = "[$timestamp] [$Type] $Message"
-    Write-Output $logLine
+    $msgTypeToColor = @{ "DEBUG" = "Gray"; "ERROR" = "Red"; "INFO" = "Green"; "WARNING" = "Yellow" }
+    $messageColor = $msgTypeToColor[$Type]
+    if (Test-LogLevel -MessageType $Type) {
+        Write-Host -ForegroundColor $messageColor "[$Type] $Message"
+        [Console]::Out.Flush()
+    }
     if ($Script:LogFilePath -and (Test-Path -LiteralPath $Script:LogFilePath -PathType Leaf)) {
         try {
             Add-Content -LiteralPath $Script:LogFilePath -Value $logLine -ErrorAction Stop
         }
         catch {
-            Write-Output "[$timestamp] [WARNING] Could not write to log file: $($_.Exception.Message)"
+            if (Test-LogLevel -MessageType "WARNING") {
+                Write-Host -ForegroundColor Yellow "[WARNING] Could not write to log file: $($_.Exception.Message)"
+                [Console]::Out.Flush()
+            }
         }
     }
 }
@@ -151,13 +194,15 @@ Function Get-NormalizedVibKey {
 
         .DESCRIPTION
         esxcli software vib list returns objects whose property names may be PascalCase or lowercase.
-        This function normalizes to a "Name--Version" key so sets can be compared.
+        PowerShell property access is case-insensitive, so Name/Version/Id are read without casing checks.
+        This function normalizes to a "Name--Version" key so sets can be compared; disjoint names or
+        disjoint versions (same name, different version) both produce different keys and indicate heterogeneity.
 
         .PARAMETER VibItem
         One VIB object from the esxcli software vib list output.
 
         .OUTPUTS
-        A string in the form "Name--Version", or "Unknown--" if name cannot be determined.
+        System.String. A string in the form "Name--Version", or "Unknown--" if name cannot be determined.
 
         .EXAMPLE
         $key = Get-NormalizedVibKey -VibItem $vibItem
@@ -167,20 +212,26 @@ Function Get-NormalizedVibKey {
     #>
 
     [CmdletBinding()]
+    [OutputType([String])]
     param(
         [Parameter(Mandatory = $true)] [PSCustomObject]$VibItem
     )
-    $vibName = $null
-    $vibVersion = $null
-    if ($VibItem.PSObject.Properties['Name']) { $vibName = $VibItem.Name }
-    elseif ($VibItem.PSObject.Properties['name']) { $vibName = $VibItem.name }
-    if ($VibItem.PSObject.Properties['Version']) { $vibVersion = $VibItem.Version }
-    elseif ($VibItem.PSObject.Properties['version']) { $vibVersion = $VibItem.version }
-    if (-not $vibName -and $VibItem.PSObject.Properties['Id']) { $vibName = $VibItem.Id }
-    elseif (-not $vibName -and $VibItem.PSObject.Properties['id']) { $vibName = $VibItem.id }
-    if (-not $vibVersion) { $vibVersion = "" }
-    if (-not $vibName) { $vibName = "Unknown" }
-    return "$vibName--$vibVersion"
+
+    # PowerShell property access is case-insensitive; use Name, fallback to Id.
+    $vibName = $VibItem.Name
+    if (-not $vibName) {
+        $vibName = $VibItem.Id
+    }
+    if (-not $vibName) {
+        $vibName = "Unknown"
+    }
+
+    $vibVersion = $VibItem.Version
+    if (-not $vibVersion) {
+        $vibVersion = ""
+    }
+
+    [String]"$vibName--$vibVersion"
 }
 Function Get-VibSetFromHost {
 
@@ -229,49 +280,36 @@ Function Get-VibSetFromHost {
         }
     }
     catch {
-        Write-LogMessage -Type ERROR -Message "Host $($VMHost.Name): Failed to get VIB list. $($_.Exception.Message)"
+        $errorMessage = $_.Exception.Message
+        Write-LogMessage -Type ERROR -Message "Host $($VMHost.Name): Failed to get VIB list. $errorMessage"
+        # User-friendly throw when failure is likely due to missing or lost vCenter connection.
+        if ($errorMessage -match "default server|DefaultViServer|not connected|connection|No connection") {
+            throw "Cannot get VIB list from host. Ensure vCenter connection is active (Connect-VIServer). Run Get-Help .\Get-VcfClusterVibConsistency.ps1 -Full for prerequisites."
+        }
         throw
     }
     return $vibKeySet
 }
 
 
-
 try {
     # Resolve which vCenter connection to use. VCF PowerCLI 9 does not support Get-VIServer -State; use $Global:DefaultViServers.
     if (-not $Global:DefaultViServers) {
-        $connectionHelp = @"
-This script needs an active vCenter connection. Connect to vCenter first, then run the script.
-
-Example:
-  Connect-VIServer -Server "your-vcenter.example.com" -User "administrator@vsphere.local" -Password (Read-Host -Prompt "Password" -AsSecureString)
-  .\Get-VcfClusterVibConsistency.ps1 -ClusterName "your-cluster-name"
-
-If you use -Server, that vCenter must be one of the connected servers.
-"@
-        Write-LogMessage -Type ERROR -Message "No vCenter connection found. User must run Connect-VIServer before this script."
-        throw $connectionHelp
+        Write-LogMessage -Type ERROR -Message "No vCenter connection found. Connect to vCenter first with Connect-VIServer, then run this script. Example: Connect-VIServer -Server \"vcenter.example.com\" -User \"administrator@vsphere.local\" -Password (Read-Host -Prompt \"Password\" -AsSecureString); .\Get-VcfClusterVibConsistency.ps1 -ClusterName \"your-cluster-name\". If you use -Server, that vCenter must be one of the connected servers."
+        throw "No vCenter connection. Connect with Connect-VIServer first. Run Get-Help .\Get-VcfClusterVibConsistency.ps1 -Full for usage and examples."
     }
     $connectedServers = @($Global:DefaultViServers | Where-Object { $_.IsConnected -eq $true })
     if (-not $connectedServers -or $connectedServers.Count -eq 0) {
-        $connectionHelp = @"
-No active vCenter session was found. Connect to vCenter first, then run the script.
-
-Example:
-  Connect-VIServer -Server "your-vcenter.example.com" -User "administrator@vsphere.local" -Password (Read-Host -Prompt "Password" -AsSecureString)
-  .\Get-VcfClusterVibConsistency.ps1 -ClusterName "your-cluster-name"
-
-If you use -Server, that vCenter must be one of the connected servers.
-"@
-        Write-LogMessage -Type ERROR -Message "No connected vCenter session found. User must run Connect-VIServer before this script."
-        throw $connectionHelp
+        Write-LogMessage -Type ERROR -Message "No active vCenter session found. Connect to vCenter first with Connect-VIServer, then run this script. Example: Connect-VIServer -Server \"vcenter.example.com\" -User \"administrator@vsphere.local\" -Password (Read-Host -Prompt \"Password\" -AsSecureString); .\Get-VcfClusterVibConsistency.ps1 -ClusterName \"your-cluster-name\". If you use -Server, that vCenter must be one of the connected servers."
+        throw "No active vCenter session. Connect with Connect-VIServer first. Run Get-Help .\Get-VcfClusterVibConsistency.ps1 -Full for usage and examples."
     }
 
     if ($Server) {
         $targetConnection = $connectedServers | Where-Object { $_.Name -eq $Server } | Select-Object -First 1
         if (-not $targetConnection) {
             $connectedNames = ($connectedServers | ForEach-Object { $_.Name }) -join ", "
-            throw "vCenter server '$Server' is not in the list of connected servers. Connected: $connectedNames."
+            Write-LogMessage -Type ERROR -Message "vCenter server \"$Server\" is not in the list of connected servers. Connected: $connectedNames."
+            throw "vCenter '$Server' is not connected. Use one of: $connectedNames. Or omit -Server to use the default."
         }
         $vcenterServerName = $targetConnection.Name
     }
@@ -290,11 +328,18 @@ If you use -Server, that vCenter must be one of the connected servers.
         $clusterObject = Get-Cluster -Server $vcenterServerName -Name $ClusterName -ErrorAction Stop
     }
     catch {
-        Write-LogMessage -Type ERROR -Message "Get-Cluster failed for '$ClusterName' on '$vcenterServerName': $($_.Exception.Message)"
-        throw "Cluster not found: '$ClusterName' on vCenter '$vcenterServerName'. Ensure the name matches exactly."
+        $availableClusters = @(Get-Cluster -Server $vcenterServerName -ErrorAction SilentlyContinue | Sort-Object -Property Name)
+        $msg = "Cluster with name '$ClusterName' not found."
+        if ($availableClusters.Count -gt 0) {
+            $clusterNames = ($availableClusters | ForEach-Object { $_.Name }) -join ", "
+            $msg += " Available clusters: $clusterNames."
+        }
+        Write-LogMessage -Type ERROR -Message $msg
+        exit 1
     }
     if (-not $clusterObject) {
-        throw "Cluster not found: '$ClusterName' on vCenter '$vcenterServerName'."
+        Write-LogMessage -Type ERROR -Message "Cluster with name '$ClusterName' not found."
+        exit 1
     }
 
     $clusterHosts = $null
@@ -312,14 +357,28 @@ If you use -Server, that vCenter must be one of the connected servers.
     # Gather VIB set per host.
     Write-LogMessage -Type INFO -Message "Collecting VIBs from $($clusterHosts.Count) host(s) in cluster `"$ClusterName`"."
     $hostVibSets = @{}
+    $vibCollectActivity = "Collecting VIBs from $($clusterHosts.Count) host(s) in cluster `"$ClusterName`""
+    $vibCollectStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $hostIndex = 0
     foreach ($vmHost in $clusterHosts) {
+        $hostIndex++
+        $elapsedSeconds = [math]::Floor($vibCollectStopwatch.Elapsed.TotalSeconds)
+        $statusMessage = "Elapsed: $elapsedSeconds seconds"
+        $currentOperation = "Host $hostIndex of $($clusterHosts.Count)"
+        Write-Progress -Activity $vibCollectActivity -Status $statusMessage -CurrentOperation $currentOperation
+        [Console]::Out.Flush()
         $currentHostName = $vmHost.Name
         $hostVibSets[$currentHostName] = Get-VibSetFromHost -VMHost $vmHost -VcenterServerName $vcenterServerName
     }
+    Write-Progress -Activity $vibCollectActivity -Status "Complete" -Completed
+    [Console]::Out.Flush()
 
     # Compare each host to the first host (reference).
     $referenceHostName = ($clusterHosts | Select-Object -First 1).Name
     $referenceVibSet = $hostVibSets[$referenceHostName]
+    Write-LogMessage -Type DEBUG -Message "Reference host for cluster `"$ClusterName`": $referenceHostName"
+    $hostsTestedList = ($hostVibSets.Keys | Sort-Object) -join ", "
+    Write-LogMessage -Type DEBUG -Message "Hosts tested in cluster `"$ClusterName`": $hostsTestedList"
     $isHomogeneous = $true
     $deltaList = @()
 
@@ -353,29 +412,27 @@ If you use -Server, that vCenter must be one of the connected servers.
     }
 
     if ($isHomogeneous) {
-        Write-LogMessage -Type INFO -Message "Result: homogeneous cluster. All $($clusterHosts.Count) host(s) have the same VIB set."
-        Write-Output "homogeneous cluster"
+        Write-LogMessage -Type DEBUG -Message "Result: homogeneous cluster. All $($clusterHosts.Count) host(s) have the same VIB set."
     }
     else {
-        Write-LogMessage -Type INFO -Message "Result: heterogeneous cluster. The following host(s) differ from reference host `"$referenceHostName`":"
-        Write-Output "heterogeneous cluster"
+        Write-LogMessage -Type DEBUG -Message "Result: heterogeneous cluster. The following host(s) differ from reference host `"$referenceHostName`":"
         foreach ($deltaEntry in $deltaList) {
-            Write-LogMessage -Type INFO -Message "  Host: $($deltaEntry.HostName)"
+            Write-LogMessage -Type DEBUG -Message "  Host: $($deltaEntry.HostName)"
             if ($deltaEntry.Missing.Count -gt 0) {
-                Write-LogMessage -Type INFO -Message "    Missing VIBs (vs reference): $($deltaEntry.Missing.Count)"
+                Write-LogMessage -Type DEBUG -Message "    Missing VIBs (vs reference): $($deltaEntry.Missing.Count)"
                 foreach ($missingVib in $deltaEntry.Missing) {
-                    Write-LogMessage -Type INFO -Message "      - $missingVib"
+                    Write-LogMessage -Type DEBUG -Message "      - $missingVib"
                 }
             }
             if ($deltaEntry.Extra.Count -gt 0) {
-                Write-LogMessage -Type INFO -Message "    Extra VIBs (not on reference): $($deltaEntry.Extra.Count)"
+                Write-LogMessage -Type DEBUG -Message "    Extra VIBs (not on reference): $($deltaEntry.Extra.Count)"
                 foreach ($extraVib in $deltaEntry.Extra) {
-                    Write-LogMessage -Type INFO -Message "      + $extraVib"
+                    Write-LogMessage -Type DEBUG -Message "      + $extraVib"
                 }
             }
         }
     }
-
+    # Return the result object.
     $result
 }
 catch {
