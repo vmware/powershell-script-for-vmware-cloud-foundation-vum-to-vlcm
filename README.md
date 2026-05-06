@@ -6,147 +6,291 @@
 [![GitHub Clones](https://img.shields.io/badge/dynamic/json?color=success&label=Clone&query=count&url=https://gist.githubusercontent.com/nathanthaler/cf28a7a69217ecfa5e5ac5f23fcb37ef/raw/clone.json&logo=github)](https://gist.githubusercontent.com/nathanthaler/cf28a7a69217ecfa5e5ac5f23fcb37ef/raw/clone.json)
 ![Downloads](https://img.shields.io/github/downloads/vmware/powershell-script-for-vmware-cloud-foundation-vum-to-vlcm/total?label=Release%20Downloads)
 
+## Features
 
+The vLCM Baseline (VUM) to vLCM Image transition script provides three mechanisms for transitioning clusters and standalone hosts.
 
-## Common features for VCF 9.x and 5.2.x
-The vLCM Baseline (VUM) to vLCM Image transition script provides the customer three mechanisms.
+1. Interactive mode (text-user interface) with single or multi-selection of resources, with check and transition jobs executed serially.
+2. Command line mode using in-line parameters with single resource selection.
+3. Command line mode using JSON input with single or multi-selection of resources, with check and transition jobs executed in parallel.
 
-1. Interactive mode (text-user interface) with single or multi-selection of clusters, with check and transition jobs executed serially.
-2. Command line mode using in-line parameters with single cluster selection.
-3. Command line mode using JSON input with single or multi-selection of clusters, with check and transition jobs executed in parallel.
+Additional capabilities:
 
-## VCF 5.2.2 specific features
+* Standalone host (SAH) support for compliance check and transition.
+* Host remediation options file support (`-HostRemediationOptionsFile`, `-CreateHostRemediationOptionsFile`, `-CheckHostRemediationOptionsFile`).
+* Image seeding: auto-generates a vLCM image from an existing host when no image is specified.
+* Optional image seeding support for VSRN.
 
-* VxRail Support (image seeding only).
-* Optional Image seeding support for VSRN.
+## VCF version-specific features
+
+### VCF 5.2.2+
+
+* VxRail support (image seeding only).
 * vLCM Baseline to vLCM Image transition for non-Supervisor, non-hetero clusters with 5.x sBOMs.
 
-## VCF 9.0.x specific features
+### VCF 9.0.x
 
 * Support for vSphere Supervisor clusters.
 
+### VCF 9.0.x and later
+
+* Standalone host (SAH) transition support.
+
 ## Prerequisites
 
-1. SDDC Manager 5.2.2+ / 9.0.0.0+
-2. VCF.PowerCLI 9
-3. Powershell 7.2+
+1. SDDC Manager 5.2.2+ / 9.x
+2. VCF.PowerCLI 9.1
+3. Powershell 7.4+
 
 ## Installing VCF.PowerCLI 9
 
-1. Install-Module -Name VCF.PowerCLI
+1. Install-Module -Name VCF.PowerCLI -MinimumVersion 9.1
 2. Set-PowerCLIConfiguration -InvalidCertificateAction Ignore
 3. Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
-## 5.2.2 Specific instructions
+## Usage
 
-### Compliance check with image seeding: Menu option
+### Connect to SDDC Manager and vCenters
 
-* Choose Option 3 as you normally would.
+Connect interactively, prompting for credentials if no saved credential file is found:
 
-```Powershell
-vLCM Baseline (VUM) to vLCM Image Cluster Transition Menu.
-
- 1. Connect to SDDC Manager and select vCenter. [Connected to: vcf01.sfo.rainpole.io]
- 2. Import vLCM images from vCenter(s) into SDDC Manager.
- 3. Check existing cluster(s)`' vLCM image compliance.
- 4. Transition vLCM baseline (VUM) cluster to vLCM image management.
- 5. (Optional) Disconnect from vCenter(s) and SDDC Manager.
- 6. (Optional) Retry incomplete transition tasks.
- 7. (Optional) Delete SDDC Manager Image.
- 8. (Optional) Show script version.
- 9. (Optional) Show cluster transition status.
- 10. (Optional) Show vLCM images in SDDC Manager.
- Q. Press Q to Quit
-
- (1-10 or Q): 3
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -Connect
 ```
 
-* New behavior: if you select clusters that are controlled by vCenter 8.0.3 and whose first host runs ESX 8.0.3,
-the default will be to use image seeding, in which case the image will be auto-generated.   This option is not required,
-hence the non-default option to chose an image.  Please note: the menu driven interface is simplified by design: if a user
-chooses two clusters both of which support image seeding, the option to utilize image seeding will be presented, however,
-if only one cluster supports it, the option will be suppressed.
+Connect without screen output (log file only):
 
-```Powershell
-Displaying vLCM baseline (VUM) managed clusters in connected vCenter(s):
-
-  Id Cluster Name vCenter Name                 Workload Domain    Compliance Status SDDC Manager Image Name
-  -- ------------ ------------                 ---------------    ----------------- -----------------------
-  1  m01-cl01     m01-vc01.example.com         m01                NON_COMPLIANT     N/A
-  2  w01-cl01     w01-vc01.example.com         w01                NON_COMPLIANT     N/A
-
-Enter an id, a comma-delimited list of ids, or 'c' to cancel: 1,2
-
-All clusters are eligible for host seeding.  Would you like to auto generate a vLCM image for them using
-host seeding?
-[Y] Yes  [N] No  [?] Help (default is "Y"):
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -Connect -Silence
 ```
 
-* Moving onto step 4, the clusters will show up as having a auto-generated image associated with them.
+Connect using a non-default credential file:
 
-```Powershell
-vLCM Baseline (VUM) to vLCM Image Cluster Transition Menu.
-
- 1. Connect to SDDC Manager and select vCenter. [Connected to: vcf01.sfo.rainpole.io]
- 2. Import vLCM images from vCenter(s) into SDDC Manager.
- 3. Check existing cluster(s)`' vLCM image compliance.
- 4. Transition vLCM baseline (VUM) cluster to vLCM image management.
- 5. (Optional) Disconnect from vCenter(s) and SDDC Manager.
- 6. (Optional) Retry incomplete transition tasks.
- 7. (Optional) Delete SDDC Manager Image.
- 8. (Optional) Show script version.
- 9. (Optional) Show cluster transition status.
- 10. (Optional) Show vLCM images in SDDC Manager.
- Q. Press Q to Quit
-
- (1-10 or Q): 4
-...
-Displaying vLCM baseline (VUM) managed clusters in connected vCenter(s):
-
-  Id Cluster Name vCenter Name                 Workload Domain    Compliance Status SDDC Manager Image Name
-  -- ------------ ------------                 ---------------    ----------------- -----------------------
-  1  m01-cl01     m01-vc01.example.com         m01                NON_COMPLIANT     <Autogenerated-Image>
-  2  w01-cl01     w01-vc01.example.com         w01                NON_COMPLIANT     <Autogenerated-Image>
-
-[INFO] Select the vLCM baseline clusters to transition to vLCM image management.
-...
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -Connect -JsonInput .\SddcManagerCredentials-Prod.json
 ```
 
-### Compliance check with image seeding: JSON option
+### Show vLCM images in vCenter
 
-* Normally, the compliance check JSON payload requires three values for each cluster:  ClusterName, WorkloadDomainName, and SddcManagerImageName.  However, if SddcManagerImageName is not presented, the script will assume image seeding mode.  If the cluster does not support image seeding mode, the script will skip that cluster as it cannot process it without an image.
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -ShowImagesInVcenter
+```
 
-* The script invocation itself does not change, only the payload.
+### Import a vLCM image from vCenter into SDDC Manager
 
-```Powershell
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -ImportImagesFromVcenter -VcenterName vcenter-1.example.com -VcenterImageName m01-cl01
+```
 
-> Get-Content ./BaselineClusters.json
+### Check image upload task status
+
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -CheckTaskStatus -TaskType SddcManagerImageUpload
+```
+
+### Show vLCM images in SDDC Manager
+
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -ShowImagesInSddcManager
+```
+
+### Show baseline resources
+
+`-ShowBaselineClusters` is renamed `-ShowBaselineResources` Output now includes a `Resource Type` column.
+
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -ShowBaselineResources
+```
+
+Save output to a JSON file:
+
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -ShowBaselineResources -JsonOutput Resources.json
+```
+
+Save to a JSON file without screen output:
+
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -ShowBaselineResources -JsonOutput Resources.json -Silence
+```
+
+The JSON output schema uses `ResourceName` and `ResourceType` instead of `ClusterName`:
+
+```PowerShell
+> Get-Content .\Resources.json
 [
   {
-    "ClusterName": "m01-cl01",
-    "WorkloadDomainName": "m01"
+    "ResourceName": "esx-1.example.com",
+    "ResourceType": "Standalone Host",
+    "WorkloadDomainName": "m01",
+    "SddcManagerImageName": "<Autogenerated-Image>"
   },
   {
-    "ClusterName": "w01-cl01",
-    "WorkloadDomainName": "w01"
+    "ResourceName": "esx-2.example.com",
+    "ResourceType": "Standalone Host",
+    "WorkloadDomainName": "m01",
+    "SddcManagerImageName": "N/A"
   }
 ]
 ```
 
-### Compliance check with image seeding: parameter option
+### Host remediation options file (new in 9.1)
 
-* As with the JSON option, if SddcManagerImageName is not specified as a parameter name with a value, image seeding is assumed and if the cluster does not support said option, the script will exit with an error.
+Generate a host remediation options file interactively. This file controls retry behavior, power state, and QuickBoot during transition.
 
-```Powershell
-./VcfBaselineClusterTransition.ps1 -ComplianceCheck -ClusterName m01-cl01 -WorkloadDomainName w01
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -CreateHostRemediationOptionsFile -JsonOutput HostRemediationOptionsFile.json
+```
+
+The resulting JSON file:
+
+```PowerShell
+> Get-Content .\HostRemediationOptionsFile.json
+{
+  "PreRemediationPowerAction": "DO_NOT_CHANGE_VMS_POWER_STATE",
+  "RemediationRetryDelay": "305",
+  "RemediationRetryCount": "5",
+  "RemediationFailureAction": "RETRY",
+  "QuickBootEnabled": false
+}
+```
+
+Valid values for `PreRemediationPowerAction`: `POWER_OFF_VMS`, `SUSPEND_VMS`, `DO_NOT_CHANGE_VMS_POWER_STATE`, `SUSPEND_VMS_TO_MEMORY`.
+
+Validate the file before use:
+
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -CheckHostRemediationOptionsFile -JsonInput HostRemediationOptionsFile.json
+```
+
+### Compliance check: parameter option (image seeding)
+
+`-ClusterName` is replaced by `-ResourceName` and `-ResourceType` is now required. Omitting `-SddcManagerImageName` triggers image seeding, where the script auto-generates a vLCM image from the host.
+
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -ComplianceCheck -ResourceType "Standalone Host" -WorkloadDomain m01 -ResourceName esx-2.example.com
+```
+
+### Compliance check: parameter option (bring-your-own image)
+
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -ComplianceCheck -ResourceType "Standalone Host" -WorkloadDomain m01 -ResourceName esx-2.example.com -SddcManagerImageName m01-cl01
+```
+
+### Compliance check: JSON option (image seeding, parallel)
+
+Omitting `SddcManagerImageName` from the payload triggers image seeding per resource.
+
+```PowerShell
+> Get-Content ./BaselineResources-ImageSeeding.json
+[
+  {
+    "ResourceName": "esx-2.example.com",
+    "ResourceType": "Standalone Host",
+    "WorkloadDomainName": "m01"
+  },
+  {
+    "ResourceName": "esx-3.example.com",
+    "ResourceType": "Standalone Host",
+    "WorkloadDomainName": "m01"
+  }
+]
+
+./VcfBaselineClusterTransition.ps1 -ComplianceCheck -JsonInput .\BaselineResources-ImageSeeding.json -Parallel
+```
+
+### Compliance check: JSON option (bring-your-own image, serialized)
+
+```PowerShell
+> Get-Content ./BaselineResources-ImageSpecified.json
+[
+  {
+    "ResourceName": "esx-1.example.com",
+    "ResourceType": "Standalone Host",
+    "WorkloadDomainName": "m01",
+    "SddcManagerImageName": "m01-cl01"
+  },
+  {
+    "ResourceName": "esx-2.example.com",
+    "ResourceType": "Standalone Host",
+    "WorkloadDomainName": "m01",
+    "SddcManagerImageName": "m01-cl01"
+  }
+]
+
+./VcfBaselineClusterTransition.ps1 -ComplianceCheck -JsonInput .\BaselineResources-ImageSpecified.json
+```
+
+### Check compliance task status
+
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -CheckTaskStatus -TaskType ComplianceCheck
+```
+
+### Review compliance results (all resources)
+
+`-ShowAllClusters` is renamed `-ShowAllResources`:
+
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -ReviewComplianceResults -ShowAllResources
+```
+
+### Review compliance results (single resource)
+
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -ReviewComplianceResults -ResourceName esx-1.example.com -ResourceType "Standalone Host" -WorkloadDomainName m01
+```
+
+### Review compliance results (single resource, extended JSON output)
+
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -ReviewComplianceResults -ResourceName esx-1.example.com -ResourceType "Standalone Host" -WorkloadDomainName m01 -ShowExtendedResults
+```
+
+### Transition: parameter option with host remediation options file
+
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -TransitionResource -ResourceName esx-3.example.com -ResourceType "Standalone Host" -WorkloadDomainName "m01" -HostRemediationOptionsFile HostRemediationOptionsFile.json
+```
+
+### Transition: JSON option with parallelism
+
+```PowerShell
+> Get-Content ./BaselineResources.json
+[
+  {
+    "ResourceName": "esx-2.example.com",
+    "ResourceType": "Standalone Host",
+    "WorkloadDomainName": "m01"
+  },
+  {
+    "ResourceName": "esx-3.example.com",
+    "ResourceType": "Standalone Host",
+    "WorkloadDomainName": "m01"
+  }
+]
+
+./VcfBaselineClusterTransition.ps1 -TransitionResource -Parallel -JsonInput .\BaselineResources.json
+```
+
+### Check transition status (all resources)
+
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -CheckTransitions
+```
+
+### Check transition status (single resource)
+
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -CheckTransitions -ResourceName esx-3.example.com -ResourceType "Standalone Host" -WorkloadDomainName "m01"
 ```
 
 ### Official guides
 
-- [9.0 VUM to vLCM Admin Guide](https://techdocs.broadcom.com/us/en/vmware-cis/vcf/vcf-9-0-and-later/9-0/deployment/upgrading-cloud-foundation/upgrade-the-management-domain-to-vmware-cloud-foundation-5-2/vlcm-baseline-to-vlcm-image-cluster-transition-.html)
-- [5.2.2 VUM to vLCM Admin Guide](https://techdocs.broadcom.com/us/en/vmware-cis/vcf/vcf-5-2-and-earlier/5-2/vmware-cloud-foundation-lifecycle-management/vlcm-baseline-to-vlcm-image-cluster-transition-522-lifecycle/transition-vlcm-baseline-clusters-to-vlcm-image-clusters-using-powercli-522-lifecycle.html)
+* [9.0 VUM to vLCM Admin Guide](https://techdocs.broadcom.com/us/en/vmware-cis/vcf/vcf-9-0-and-later/9-0/deployment/upgrading-cloud-foundation/upgrade-the-management-domain-to-vmware-cloud-foundation-5-2/vlcm-baseline-to-vlcm-image-cluster-transition-.html)
+* [5.2.2 VUM to vLCM Admin Guide](https://techdocs.broadcom.com/us/en/vmware-cis/vcf/vcf-5-2-and-earlier/5-2/vmware-cloud-foundation-lifecycle-management/vlcm-baseline-to-vlcm-image-cluster-transition-522-lifecycle/transition-vlcm-baseline-clusters-to-vlcm-image-clusters-using-powercli-522-lifecycle.html)
 
 ### Support
 
-- For product issues, please open a standard Broadcom support case.
-- For bugs or enhancement requests with this script, please open a [github issue](https://github.com/vmware/powershell-script-for-vmware-cloud-foundation-vum-to-vlcm/issues).
+* For product issues, please open a standard Broadcom support case.
+* For bugs or enhancement requests with this script, please open a [github issue](https://github.com/vmware/powershell-script-for-vmware-cloud-foundation-vum-to-vlcm/issues).
