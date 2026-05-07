@@ -1,6 +1,6 @@
 # VUM to vLCM Transition for VMware Cloud Foundation
 
-[![PowerShell](https://img.shields.io/badge/PowerShell-7.2%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
+[![PowerShell](https://img.shields.io/badge/PowerShell-7.4%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![License](https://img.shields.io/badge/License-Broadcom-green.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-1.0.0.0.60-orange.svg)](CHANGELOG.md)
 [![GitHub Clones](https://img.shields.io/badge/dynamic/json?color=success&label=Clone&query=count&url=https://gist.githubusercontent.com/nathanthaler/cf28a7a69217ecfa5e5ac5f23fcb37ef/raw/clone.json&logo=github)](https://gist.githubusercontent.com/nathanthaler/cf28a7a69217ecfa5e5ac5f23fcb37ef/raw/clone.json)
@@ -32,7 +32,7 @@ Additional capabilities:
 
 * Support for vSphere Supervisor clusters.
 
-### VCF 9.0.x and later
+### VCF 9.1.x and later
 
 * Standalone host (SAH) transition support.
 
