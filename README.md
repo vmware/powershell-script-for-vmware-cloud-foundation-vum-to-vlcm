@@ -2,7 +2,7 @@
 
 [![PowerShell](https://img.shields.io/badge/PowerShell-7.4%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![License](https://img.shields.io/badge/License-Broadcom-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.0.0.0.60-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.0.0.0.61-orange.svg)](CHANGELOG.md)
 [![GitHub Clones](https://img.shields.io/badge/dynamic/json?color=success&label=Clone&query=count&url=https://gist.githubusercontent.com/nathanthaler/cf28a7a69217ecfa5e5ac5f23fcb37ef/raw/clone.json&logo=github)](https://gist.githubusercontent.com/nathanthaler/cf28a7a69217ecfa5e5ac5f23fcb37ef/raw/clone.json)
 ![Downloads](https://img.shields.io/github/downloads/vmware/powershell-script-for-vmware-cloud-foundation-vum-to-vlcm/total?label=Release%20Downloads)
 
@@ -161,28 +161,28 @@ Validate the file before use:
 ./VcfBaselineClusterTransition.ps1 -CheckHostRemediationOptionsFile -JsonInput HostRemediationOptionsFile.json
 ```
 
-### Compliance check: parameter option (image seeding)
+### Compliance checks
 
 > [!Note]
 > `-ClusterName` is replaced by `-ResourceName` and `-ResourceType` is now required.
 > Omitting `-SddcManagerImageName` triggers image seeding, where the script auto-generates a vLCM image from the host.
 
-#### Run a compliance check with image seeding (single resource)
+#### Run a compliance check for a single resource using image seeding
 
 ```PowerShell
 ./VcfBaselineClusterTransition.ps1 -ComplianceCheck -ResourceType "Standalone Host" -WorkloadDomain m01 -ResourceName esx-2.example.com
 ```
 
-#### Run a compliance check with image seeding (single resource) (bring-your-own image)
+#### Run a compliance check with for a single resource with using a specified vLCM image
 
 ```PowerShell
 ./VcfBaselineClusterTransition.ps1 -ComplianceCheck -ResourceType "Standalone Host" -WorkloadDomain m01 -ResourceName esx-2.example.com -SddcManagerImageName m01-cl01
 ```
 
-#### Run a compliance check with image seeding (multiple hosts sourced from a JSON) (image seeding) (parallel remediation)
+#### Run compliance checks for multiple resources (JSON source) with a mix of image seeding and specified images, in a parallelized manner
 
 > [!Note]
-> Omitting `SddcManagerImageName` from the payload triggers image seeding per resource.
+> Omitting `SddcManagerImageName` from JSON stanza image seeding.
 
 ```json
 > Get-Content ./BaselineResources-ImageSeeding.json
@@ -195,7 +195,8 @@ Validate the file before use:
   {
     "ResourceName": "esx-3.example.com",
     "ResourceType": "Standalone Host",
-    "WorkloadDomainName": "m01"
+    "WorkloadDomainName": "m01",
+    "SddcManagerImageName: "myImage"
   }
 ]
 ```
@@ -204,9 +205,12 @@ Validate the file before use:
 ./VcfBaselineClusterTransition.ps1 -ComplianceCheck -JsonInput .\BaselineResources-ImageSeeding.json -Parallel
 ```
 
-### Compliance check: JSON option (bring-your-own image, serialized)
+#### Run compliance checks for multiple resources (JSON source) with a mix of image seeding and specified images, serialized
 
-```PowerShell
+> [!Note]
+> If the `-Parallel` flag is not utilized, the work is serialized and a progress meter is shown.
+
+```json
 > Get-Content ./BaselineResources-ImageSpecified.json
 [
   {
@@ -222,7 +226,9 @@ Validate the file before use:
     "SddcManagerImageName": "m01-cl01"
   }
 ]
+```
 
+```Powershell
 ./VcfBaselineClusterTransition.ps1 -ComplianceCheck -JsonInput .\BaselineResources-ImageSpecified.json
 ```
 
@@ -232,35 +238,50 @@ Validate the file before use:
 ./VcfBaselineClusterTransition.ps1 -CheckTaskStatus -TaskType ComplianceCheck
 ```
 
-### Review compliance results (all resources)
+### Review compliance results
 
-`-ShowAllClusters` is renamed `-ShowAllResources`:
+> [!Note]
+> `-ShowAllClusters` was renamed `-ShowAllResources`
+
+#### Review compliance results for all resources
 
 ```PowerShell
 ./VcfBaselineClusterTransition.ps1 -ReviewComplianceResults -ShowAllResources
 ```
 
-### Review compliance results (single resource)
+#### Review compliance results for a single resource
 
 ```PowerShell
 ./VcfBaselineClusterTransition.ps1 -ReviewComplianceResults -ResourceName esx-1.example.com -ResourceType "Standalone Host" -WorkloadDomainName m01
 ```
 
-### Review compliance results (single resource, extended JSON output)
+#### Review compliance results for a single resource with  extended JSON output
 
 ```PowerShell
 ./VcfBaselineClusterTransition.ps1 -ReviewComplianceResults -ResourceName esx-1.example.com -ResourceType "Standalone Host" -WorkloadDomainName m01 -ShowExtendedResults
 ```
 
-### Transition: parameter option with host remediation options file
+### Transition resources
+
+> [!Note]
+> If the `-Parallel` flag is not utilized, the work is serialized and a progress meter is shown.
+
+
+#### Transition single resource
+
+```PowerShell
+./VcfBaselineClusterTransition.ps1 -TransitionResource -ResourceName esx-3.example.com -ResourceType "Standalone Host" -WorkloadDomainName "m01"
+```
+
+#### Transition single resource with host remediation options file
 
 ```PowerShell
 ./VcfBaselineClusterTransition.ps1 -TransitionResource -ResourceName esx-3.example.com -ResourceType "Standalone Host" -WorkloadDomainName "m01" -HostRemediationOptionsFile HostRemediationOptionsFile.json
 ```
 
-### Transition: JSON option with parallelism
+#### Transition multiple resources through JSON payload in a parallelized manner
 
-```PowerShell
+```json
 > Get-Content ./BaselineResources.json
 [
   {
@@ -275,16 +296,19 @@ Validate the file before use:
   }
 ]
 
+```Powershell
 ./VcfBaselineClusterTransition.ps1 -TransitionResource -Parallel -JsonInput .\BaselineResources.json
 ```
 
-### Check transition status (all resources)
+### Check transition status
+
+### Check transition status for all resources
 
 ```PowerShell
 ./VcfBaselineClusterTransition.ps1 -CheckTransitions
 ```
 
-### Check transition status (single resource)
+### Check transition status for specific resource (more detailed)
 
 ```PowerShell
 ./VcfBaselineClusterTransition.ps1 -CheckTransitions -ResourceName esx-3.example.com -ResourceType "Standalone Host" -WorkloadDomainName "m01"
