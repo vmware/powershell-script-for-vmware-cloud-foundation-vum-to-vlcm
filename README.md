@@ -302,22 +302,28 @@ Validate the file before use:
 
 ### Check transition status
 
-### Check transition status for all resources
+#### Check transition status for all resources
 
 ```PowerShell
 ./VcfBaselineClusterTransition.ps1 -CheckTransitions
 ```
 
-### Check transition status for specific resource (more detailed)
+#### Check transition status for specific resource (more detailed)
 
 ```PowerShell
 ./VcfBaselineClusterTransition.ps1 -CheckTransitions -ResourceName esx-3.example.com -ResourceType "Standalone Host" -WorkloadDomainName "m01"
 ```
 
+### Collect logs
+
+```Powershell
+./VcfBaselineClusterTransition.ps1 -CollectLogs
+```
+
 ### Official guides
 
-* [9.0 VUM to vLCM Admin Guide](https://techdocs.broadcom.com/us/en/vmware-cis/vcf/vcf-9-0-and-later/9-0/deployment/upgrading-cloud-foundation/upgrade-the-management-domain-to-vmware-cloud-foundation-5-2/vlcm-baseline-to-vlcm-image-cluster-transition-.html)
-* [5.2.2 VUM to vLCM Admin Guide](https://techdocs.broadcom.com/us/en/vmware-cis/vcf/vcf-5-2-and-earlier/5-2/vmware-cloud-foundation-lifecycle-management/vlcm-baseline-to-vlcm-image-cluster-transition-522-lifecycle/transition-vlcm-baseline-clusters-to-vlcm-image-clusters-using-powercli-522-lifecycle.html)
+* [9.x VUM to vLCM Admin Guide](https://techdocs.broadcom.com/us/en/vmware-cis/vcf/vcf-9-0-and-later/9-0/deployment/upgrading-cloud-foundation/upgrade-the-management-domain-to-vmware-cloud-foundation-5-2/vlcm-baseline-to-vlcm-image-cluster-transition-.html)
+* [5.2.2+ VUM to vLCM Admin Guide](https://techdocs.broadcom.com/us/en/vmware-cis/vcf/vcf-5-2-and-earlier/5-2/vmware-cloud-foundation-lifecycle-management/vlcm-baseline-to-vlcm-image-cluster-transition-522-lifecycle/transition-vlcm-baseline-clusters-to-vlcm-image-clusters-using-powercli-522-lifecycle.html)
 
 ### Support
 

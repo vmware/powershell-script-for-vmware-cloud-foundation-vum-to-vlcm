@@ -60,6 +60,14 @@
 
     Without parameters, shows all transitions. With parameters, filters to specific resources.
 
+.PARAMETER CollectLogs
+    Creates a timestamped zip archive of all log files in the logs subdirectory.
+
+    Output is saved to: <script directory>/VcfBaselineClusterTransition-logs-<yyyyMMdd-HHmmss>.zip
+
+    Each file added to the archive is listed on the console. Use this to collect logs for
+    support or troubleshooting. Does not require a connection to SDDC Manager or vCenter.
+
 .PARAMETER ComplianceCheck
     Runs a compliance check to determine if a cluster or standalone host is compatible with a vLCM image.
 
@@ -666,6 +674,7 @@ Param (
     [Parameter(Mandatory = $false)] [Switch]$CheckHostRemediationOptionsFile,
     [Parameter(Mandatory = $false)] [Switch]$CheckTaskStatus,
     [Parameter(Mandatory = $false)] [Switch]$CheckTransitions,
+    [Parameter(Mandatory = $false)] [Switch]$CollectLogs,
     [Parameter(Mandatory = $false)] [Switch]$ComplianceCheck,
     [Parameter(Mandatory = $false)] [Switch]$Connect,
     [Parameter(Mandatory = $false)] [Switch]$CreateHostRemediationOptionsFile,
@@ -703,7 +712,7 @@ Param (
 
 Set-StrictMode -Version 2
 
-$scriptVersion = '1.1.1.0.82'
+$scriptVersion = '1.0.0.61'
 
 # Initialize log level configuration (imported from OneNodeDeployment.ps1)
 $Script:configuredLogLevel = $LogLevel.ToUpper()
@@ -773,7 +782,7 @@ Function Test-ParameterValidation {
         If all validations pass, the function completes silently and script execution continues.
 
         .NOTES
-        This function exits the script with error code 1 if validation fails.
+        This function exits the script with error code 2 (PARAMETER_ERROR) if validation fails.
         All validation happens before any API calls to fail fast.
     #>
 
@@ -822,16 +831,6 @@ Function Test-ParameterValidation {
         }
     }
 
-    # Validate ResourceType enum (case-insensitive)
-    if ($ResourceType) {
-        $validTypes = @("Cluster", "Standalone Host")
-        $typeMatch = $validTypes | Where-Object { $_ -ieq $ResourceType }
-
-        if (-not $typeMatch) {
-            Exit-WithCode -ExitCode $Script:ExitCodes.PARAMETER_ERROR -Message "ResourceType must be 'Cluster' or 'Standalone Host' (case-insensitive), got: '$ResourceType'"
-        }
-    }
-
     # Validate vCenter name format (should be FQDN or IP).
     if ($VcenterName) {
         $isFqdn = $VcenterName -match '^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)+$'
@@ -849,7 +848,7 @@ Function Test-ParameterValidation {
 
     # Validate mutually exclusive parameter combinations.
     $exclusiveParams = @(
-        'Connect', 'Disconnect', 'TransitionResource', 'ComplianceCheck',
+        'CollectLogs', 'Connect', 'Disconnect', 'TransitionResource', 'ComplianceCheck',
         'ReviewComplianceResults', 'CheckTaskStatus', 'CheckTransitions',
         'ShowBaselineResources', 'ShowImagesInSddcManager', 'ShowImagesInVcenter',
         'ImportImagesFromVcenter', 'DeleteImageFromSddcManager',
@@ -936,7 +935,7 @@ Function Show-AnyKey {
     Write-LogMessage -Type DEBUG -Message "Entered Show-AnyKey function..."
 
     # Function Show-AnyKey is not required in headless mode.
-    if ($Script:Headless -eq "disabled") {
+    if (-not $Script:Headless) {
         Write-Host "Press any key to continue..." -ForegroundColor Yellow
 
         try {
@@ -1343,7 +1342,7 @@ Function New-LogFile {
             Write-Host "Log directory created successfully: $Script:LogFolder" -ForegroundColor Green
         } catch {
             Write-Host "Failed to create log directory: $Script:LogFolder - $_" -ForegroundColor Red
-            Exit-WithCode -ExitCode 9  # PRECONDITION_ERROR - can't create required directory
+            Exit-WithCode -ExitCode $Script:ExitCodes.PRECONDITION_ERROR
         }
     }
 
@@ -1357,7 +1356,7 @@ Function New-LogFile {
             Write-LogMessage -Type DEBUG -Message "Log file initialized: $Script:LogFile"
         } catch {
             Write-Host "Failed to create log file: $Script:LogFile - $_" -ForegroundColor Red
-            Exit-WithCode -ExitCode 9  # PRECONDITION_ERROR - can't create required log file
+            Exit-WithCode -ExitCode $Script:ExitCodes.PRECONDITION_ERROR
         }
     } else {
         Write-LogMessage -Type DEBUG -Message "Using existing log file: $Script:LogFile"
@@ -2238,17 +2237,17 @@ Function Write-LogMessage {
     $shouldDisplay = Test-LogLevel -MessageType $Type -ConfiguredLevel $Script:configuredLogLevel
 
     # Add blank line before message if requested and not in log-only mode and meets log level threshold.
-    if ($PrependNewLine -and (-not ($Script:logOnly -eq "enabled")) -and $shouldDisplay) {
+    if ($PrependNewLine -and (-not $Script:logOnly) -and $shouldDisplay) {
         Write-Host ""
     }
 
     # Display message to console with color coding (unless suppressed, in log-only mode, or below log level threshold).
-    if (-not $SuppressOutputToScreen -and $Script:logOnly -ne "enabled" -and $shouldDisplay) {
+    if (-not $SuppressOutputToScreen -and -not $Script:logOnly -and $shouldDisplay) {
         Write-Host -ForegroundColor $messageColor "[$Type] $Message"
     }
 
     # Add blank line after message if requested and not in log-only mode and meets log level threshold.
-    if ($AppendNewLine -and (-not ($Script:logOnly -eq "enabled")) -and $shouldDisplay) {
+    if ($AppendNewLine -and (-not $Script:logOnly) -and $shouldDisplay) {
         Write-Host ""
     }
 
@@ -2383,7 +2382,7 @@ Function Connect-SddcManager {
                 Exit-WithCode -ExitCode $Script:ExitCodes.AUTHENTICATION_ERROR -Message "Please verify SddcManagerFqdn, SddcManagerUserName, and SddcManagerPassword are properly set."
             }
         } else {
-            if ($Script:logOnly -eq "enabled") {
+            if ($Script:logOnly) {
                 # Use Write-Output to bypass logging suppression in Silence mode.
                 Write-Output "ERROR: Option -Silence cannot be used when JSON credential file not present."
                 Exit-WithCode -ExitCode $Script:ExitCodes.AUTHENTICATION_ERROR -Message "Option -Silence cannot be used when JSON credential file not present."
@@ -2597,14 +2596,12 @@ Function Get-SddcManagerAccessTokenExpiry {
             -ErrorCode "ERR_TOKEN_EXPIRED"
     }
 
-    # Remove line breaks and equals signs from access token for parsing.
-    foreach ($field in 0..1) {
-        $sanitizedAccessToken = $accessToken.Split('.')[$field].Replace('-', '+').Replace('_', '/')
-        switch ($sanitizedAccessToken.Length % 4) {
-            0 { break }
-            2 { $sanitizedAccessToken += '==' }
-            3 { $sanitizedAccessToken += '=' }
-        }
+    # Decode the JWT payload (second segment, index 1) — header (index 0) is unused.
+    $sanitizedAccessToken = $accessToken.Split('.')[1].Replace('-', '+').Replace('_', '/')
+    switch ($sanitizedAccessToken.Length % 4) {
+        0 { break }
+        2 { $sanitizedAccessToken += '==' }
+        3 { $sanitizedAccessToken += '=' }
     }
 
     try {
@@ -2779,7 +2776,8 @@ Function Connect-Vcenter {
                 $vcenterPassword = $vcenterCred.Password
                 $secureVcenterPassword = ConvertTo-SecureString -String $vcenterPassword -AsPlainText -Force
             }
-            Remove-Variable -ErrorAction SilentlyContinue -Name VcenterPassword            $vcenterCredential = New-Object System.Management.Automation.PSCredential($vcenterUserName, $secureVcenterPassword)
+            Remove-Variable -ErrorAction SilentlyContinue -Name VcenterPassword
+            $vcenterCredential = New-Object System.Management.Automation.PSCredential($vcenterUserName, $secureVcenterPassword)
 
             try {
                 $ConnectedToVcenterServer = Connect-VIServer -Server $VcenterName -Credential $vcenterCredential -ErrorAction Stop
@@ -2811,7 +2809,7 @@ Function Connect-Vcenter {
         }
     }
 
-    if ($Script:Headless -eq "disabled") {
+    if (-not $Script:Headless) {
         Write-Host "The following vCenter(s) were detected in SDDC Manager `"$Global:SddcManagerFqdn`": `n" -ForegroundColor Green
     }
 
@@ -2865,9 +2863,9 @@ Function Connect-Vcenter {
     }
 
     # Only present a selection choice for interactive mode.
-    if ($Script:Headless -eq "disabled") {
-        Write-LogMessage -Type DEBUG -Message "VcenterDisplayObject count: $(($vcenterDisplayObject | Measure-Object).Count)"
-        Write-LogMessage -Type DEBUG -Message "Response Elements count: $(($response | Measure-Object).Count)"
+    if (-not $Script:Headless) {
+        Write-LogMessage -Type DEBUG -Message "VcenterDisplayObject count: $(@($vcenterDisplayObject).Count)"
+        Write-LogMessage -Type DEBUG -Message "Response Elements count: $(@($response).Count)"
 
         # Log vCenter list in JSON format for complete data (skip header rows and <ALL VCENTERS> option).
         if ($vcenterDisplayObject.Count -gt 3) {
@@ -2916,14 +2914,14 @@ Function Connect-Vcenter {
 
     # Headless operations automatically connects to all vCenter(s). Mock the <ALL VCENTERS> connection choice
     # to reduce complexity. Set once before the loop as headless mode never re-prompts.
-    if ($Script:Headless -eq "enabled") {
+    if ($Script:Headless) {
         $allVcentersEntry = $vcenterDisplayObject | Where-Object {$_.VcenterName -eq "<ALL VCENTERS>"} | Select-Object -First 1
         $VersionSelection = if ($allVcentersEntry) { $allVcentersEntry.NumericId } else { $null }
     }
 
     Do {
 
-    if ($Script:Headless -eq "disabled") {
+    if (-not $Script:Headless) {
         $VersionSelection = Read-Host "Enter an id, a comma-delimited list of ids of vCenters to connect to, or type 'c' to cancel (default: 1)"
 
         if ($VersionSelection -eq "c") {
@@ -3068,13 +3066,13 @@ Function Test-VcentersConnection {
 
     [array]$defaultViServersVal = @(Get-Variable -Name 'DefaultViServers' -Scope Global -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Value)
 
-    if (($defaultViServersVal | Measure-Object).Count -eq 0) {
+    if (@($defaultViServersVal).Count -eq 0) {
         Write-LogMessage -Type DEBUG -Message "No vCenter connections found. Initiating connection workflow..."
         Connect-Vcenter
 
         # Verify connection was established.
         [array]$defaultViServersVal = @(Get-Variable -Name 'DefaultViServers' -Scope Global -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Value)
-        if (($defaultViServersVal | Measure-Object).Count -eq 0) {
+        if (@($defaultViServersVal).Count -eq 0) {
             Write-LogMessage -Type ERROR -Message "Failed to establish vCenter connections. Some operations may not be available."
             return $false
         }
@@ -3085,7 +3083,7 @@ Function Test-VcentersConnection {
     # Check if any vCenter are in a disconnected state.
     [array]$DisconnectedVcenters = @($defaultViServersVal | Where-Object IsConnected -eq $false | Select-Object -ExpandProperty Name)
 
-    if (($DisconnectedVcenters | Measure-Object).Count -gt 0) {
+    if ($DisconnectedVcenters.Count -gt 0) {
         # Log each disconnected vCenter for visibility.
         foreach ($DisconnectedVcenter in $DisconnectedVcenters) {
             Write-LogMessage -Type ERROR -Message "vCenter `"$DisconnectedVcenter`" is disconnected."
@@ -3097,7 +3095,7 @@ Function Test-VcentersConnection {
         # Verify reconnection was successful.
         [array]$defaultViServersVal = @(Get-Variable -Name 'DefaultViServers' -Scope Global -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Value)
         [array]$stillDisconnected = @($defaultViServersVal | Where-Object IsConnected -eq $false | Select-Object -ExpandProperty Name)
-        if (($stillDisconnected | Measure-Object).Count -gt 0) {
+        if ($stillDisconnected.Count -gt 0) {
             Write-LogMessage -Type ERROR -Message "Failed to reconnect to: $($stillDisconnected -join ', ')"
             return $false
         }
@@ -3107,7 +3105,7 @@ Function Test-VcentersConnection {
     }
 
     # All vCenters are connected - silent success.
-    $ConnectedCount = ($defaultViServersVal | Measure-Object).Count
+    $ConnectedCount = $defaultViServersVal.Count
     $ConnectedVcenters = ($defaultViServersVal | ForEach-Object { $_.Name }) -join ", "
     Write-LogMessage -Type DEBUG -Message "vCenter connection verified. $ConnectedCount vCenter(s) connected: $ConnectedVcenters"
     return $true
@@ -3383,7 +3381,7 @@ Function Get-BaselineManagedResources {
         'ComplianceStatus'     = "-----------------"
         'SddcManagerImageName' = "-----------------------"
     }
-    if ($Script:Headless -eq "enabled") {
+    if ($Script:Headless) {
         Write-LogMessage -Type INFO -AppendNewLine -Message "Scanning for vLCM baseline (VUM) managed clusters/standalone-hosts..."
     }
 
@@ -3403,7 +3401,6 @@ Function Get-BaselineManagedResources {
             "The request was canceled|timeout" { Write-LogMessage -Type ERROR -Message "Network timeout connecting to SDDC Manager `"$Global:SddcManagerFqdn`"." }
             default { Write-LogMessage -Type ERROR -Message "Failed to retrieve clusters: $($_.Exception.Message)" }
         }
-        $responseError = $true
         [array]$allClusters = @()
     }
 
@@ -3411,8 +3408,8 @@ Function Get-BaselineManagedResources {
     # This single bulk API call is more efficient than individual domain lookups.
     Write-LogMessage -Type DEBUG -Message "Retrieving all workload domains from SDDC Manager..."
     $allDomainsTimer = Start-ProcessTimer
-    $allDomainsResult2 = Invoke-VcfGetDomains -ErrorAction SilentlyContinue
-    [array]$allDomains = if ($allDomainsResult2 -and $allDomainsResult2.PSObject.Properties['Elements']) { @($allDomainsResult2.Elements) } else { @() }
+    $allDomainsQueryResult = Invoke-VcfGetDomains -ErrorAction SilentlyContinue
+    [array]$allDomains = if ($allDomainsQueryResult -and $allDomainsQueryResult.PSObject.Properties['Elements']) { @($allDomainsQueryResult.Elements) } else { @() }
     Stop-ProcessTimer -Timer $allDomainsTimer -Operation "Workload domains retrieval (bulk)" -Interval "Seconds"
     if (-not $allDomains) {
         Write-LogMessage -Type WARNING -Message "Unable to retrieve workload domains from SDDC Manager. Domain name lookups will be unavailable."
@@ -3437,13 +3434,15 @@ Function Get-BaselineManagedResources {
             Write-LogMessage -Type DEBUG -Message "Pre-populated domain cache with $($domainCache.Count) workload domain(s)."
         }
 
+        # Build the connected vCenter list once before iterating to avoid repeated Get-Variable calls.
+        [array]$connectedVcenterNames = @(Get-Variable -Name 'DefaultViServers' -Scope Global -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Value | Select-Object -ExpandProperty Name)
+
         # Only process clusters for connected vCenters.
         foreach ($vcenterGroup in $clustersByVcenter) {
             $vcenterFqdn = $vcenterGroup.Name
             $clusters = $vcenterGroup.Group | Sort-Object -Property Name
 
             # Skip vCenters that aren't in our connected list.
-            [array]$connectedVcenterNames = @(Get-Variable -Name 'DefaultViServers' -Scope Global -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Value | Select-Object -ExpandProperty Name)
             if ($vcenterFqdn -notin $connectedVcenterNames) {
                 Write-LogMessage -Type DEBUG -Message "Skipping vCenter `"$vcenterFqdn`" - not in connected vCenter list."
                 continue
@@ -3867,7 +3866,7 @@ Function Get-BaselineManagedResources {
 
     if ($vlcmBaselineManagedResourceIndex -eq [int]1) {
         Write-LogMessage -Type ERROR -Message "No baseline managed resources detected."
-        if ($Script:Headless -eq "enabled") {
+        if ($Script:Headless) {
             return
         } else {
             Show-AnyKey
@@ -3925,7 +3924,7 @@ Function Get-BaselineManagedResources {
         Write-LogMessage -Type DEBUG -Message "No baseline-managed resources found to display."
     }
 
-        if ($Script:Headless -eq "disabled") {
+        if (-not $Script:Headless) {
          Write-Host "Displaying vLCM Baseline (VUM) Managed Clusters/Standalone Hosts in Connected vCenter(s):" -ForegroundColor Green;
          return $Script:VlcmBaselineManagedResourcesDisplayObject | Format-Table -Property @{Expression = " " }, Id, ResourceName, ResourceType, VcenterName, ComplianceStatus, SddcManagerImageName -Autosize -HideTableHeaders | Out-String | ForEach-Object { $_.Trim("`r", "`n") }
         } else {
@@ -3953,7 +3952,7 @@ Function Get-BaselineManagedResources {
                 Set-Content -Path $JsonOutputFile $JsonOutput
             }
 
-            if ($Script:logOnly -eq "disabled") {
+            if (-not $Script:logOnly) {
             Write-LogMessage -Type INFO -AppendNewLine -Message "vLCM Baseline (VUM) Managed Clusters/Standalone Hosts:"
                 if ($Script:Headless) {
                 return $Script:VlcmBaselineManagedResourcesDisplayObject | Format-Table -Property @{Expression = " " }, ResourceName, ResourceType, VcenterName, WorkloadDomainName, ComplianceStatus, SddcManagerImageName -Autosize -HideTableHeaders | Out-String | ForEach-Object { $_.Trim("`r", "`n") }
@@ -3993,7 +3992,7 @@ Function Remove-ImageFromSddcManager {
     # Check if connected to SDDC Manager.
     Test-SddcManagerConnection
 
-    if ($Script:Headless -eq "disabled") {
+    if (-not $Script:Headless) {
 
         $personalities = Invoke-VcfGetPersonalities -ErrorAction SilentlyContinue
         [array]$SddcManagerImageNames = if ($personalities -and $personalities.PSObject.Properties['Elements'] -and $personalities.Elements) { @($personalities.Elements | Select-Object -ExpandProperty PersonalityName) } else { @() }
@@ -4289,7 +4288,7 @@ Function Get-VcenterImages {
         Write-LogMessage -Type INFO -Message "Connect to a vCenter to create a new vLCM image."
         Write-LogMessage -Type INFO -Message "https://techdocs.broadcom.com/us/en/vmware-cis/vsphere/vsphere/8-0/managing-host-and-cluster-lifecycle-8-0.html"
         Show-AnyKey
-        if ($Script:Headless -eq 'disabled') {
+        if (-not $Script:Headless) {
             Show-MainMenu
         }
         return
@@ -4324,11 +4323,11 @@ Function Get-VcenterImages {
         $clusterIndex++
     }
 
-    if ($Script:Headless -eq "disabled") {
+    if (-not $Script:Headless) {
         return $clusterDisplayObject
     }
 
-    if ($Script:logOnly -eq "disabled") {
+    if (-not $Script:logOnly) {
         Write-LogMessage -Type INFO -AppendNewLine -Message "vLCM images in attached vCenter(s):"
 
         # Log vCenter images in JSON format (skip header rows).
@@ -4426,7 +4425,7 @@ Function Import-ImageFromVcenter {
     if ($Script:vxRailMode) {
         Write-LogMessage -Type ERROR -Message "VxRail only supports vLCM baseline to vLCM image transitions through image seeding."
         Show-AnyKey
-        if ($Script:Headless -eq 'disabled') {
+        if (-not $Script:Headless) {
             Show-MainMenu
         }
         return
@@ -4439,7 +4438,7 @@ Function Import-ImageFromVcenter {
     Write-LogMessage -Type DEBUG -Message "SDDC Manager version: $sddcManagerVersion, Supports image catalog check: $supportsImageCatalogCheck"
 
     # In interactive mode, a user's ClusterName and vCenter are provided by selecting an Id from a menu.
-    if ($Script:Headless -eq "disabled") {
+    if (-not $Script:Headless) {
         $clusterDisplayObject  = Get-VcenterImages
 
         # Log vCenter images with IDs in JSON format (skip header rows).
@@ -4482,7 +4481,7 @@ Function Import-ImageFromVcenter {
         } While (-not $isValidId)
     }
 
-    if ($Script:Headless -eq "enabled") {
+    if ($Script:Headless) {
         if ($JsonInputFile) {
             $result = ConvertFrom-JsonSafely -JsonFilePath $JsonInputFile -VariableName "ImagesToImportIntoSddcManager"
             if (-not $result.Success) {
@@ -4511,7 +4510,7 @@ Function Import-ImageFromVcenter {
             # check if vCenter is valid.
             $isConnectedVcenter = @(Get-Variable -Name 'DefaultViServers' -Scope Global -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Value | Where-Object IsConnected -eq $true | Where-Object Name -eq $($line.VcenterName))
 
-            if (($isConnectedVcenter | Measure-Object).Count -eq 0) {
+            if ($isConnectedVcenter.Count -eq 0) {
                 Write-LogMessage -Type ERROR -Message "vCenter `"$($line.VcenterName)`" not found in list of connected vCenter(s)."
                 Exit-WithCode -ExitCode $Script:ExitCodes.VCENTER_CONNECTION_ERROR
             }
@@ -4548,7 +4547,7 @@ Function Import-ImageFromVcenter {
         }
     }
     # line break on screen.
-    if ($Script:Headless -eq "disabled") {
+    if (-not $Script:Headless) {
         Write-Host ""
     }
 
@@ -5440,7 +5439,7 @@ Function Get-SddcManagerImages {
     if ($Script:vxRailMode) {
         Write-LogMessage -Type ERROR -Message "VxRail only supports vLCM baseline to vLCM image transitions through image seeding and cannot make use of images imported into SDDC Manager."
         Show-AnyKey
-        if ($Script:Headless -eq 'disabled') {
+        if (-not $Script:Headless) {
             Show-MainMenu
         }
         return
@@ -5453,7 +5452,7 @@ Function Get-SddcManagerImages {
     if (-not $response) {
         Write-LogMessage -Type ERROR -Message "No vLCM images found in SDDC Manager `"$Global:SddcManagerFqdn`"."
         Show-AnyKey
-        if ($Script:Headless -eq "disabled") {
+        if (-not $Script:Headless) {
             Show-MainMenu
         }
     } else {
@@ -5557,7 +5556,7 @@ Function Get-SddcManagerImages {
         $imageNameIndex++
         }
 
-        if ((($Script:logOnly -eq "disabled") -and ($Script:Headless -eq "enabled")) -or ($ShowAll)){
+        if (((-not $Script:logOnly) -and ($Script:Headless)) -or ($ShowAll)){
             Write-LogMessage -Type INFO -Message "vLCM images available in SDDC Manager `"$Global:SddcManagerFqdn`":"
 
             # Log SDDC Manager images in JSON format (skip header rows).
@@ -5573,7 +5572,7 @@ Function Get-SddcManagerImages {
 
             $imageNameDisplayObject | Format-Table -Property @{Expression = {$_.SddcManagerImageName}; n='Prop'; width = 25 }, BaseImageVersion, ImageComponents, ImageAddOns, ImageHardwareSupport -HideTableHeaders | Out-Host
         }
-        if ($Script:Headless -eq "disabled") {
+        if (-not $Script:Headless) {
             if ($IdSelection) {
                 $selectedImageName = ($imageNameDisplayObject | Where-Object {$_.Id -eq $IdSelection}).SddcManagerImageName
                 if (-not $selectedImageName) {
@@ -5643,9 +5642,17 @@ Function Wait-ComplianceCheckCompletion {
         This function monitors a compliance check task by polling SDDC Manager at regular intervals.
         It displays progress updates, checks for timeout conditions, and validates task completion.
         The function returns the final task status and indicates whether a timeout occurred.
+        Transient network errors are retried silently until the overall timeoutSeconds is reached.
 
-        .PARAMETER TaskId
-        The SDDC Manager task ID to monitor (returned from Invoke-VcfUpdateCluster or Invoke-VcfUpdateDomain).
+        .PARAMETER ApiFailureLogIntervalCount
+        Number of consecutive network failures between repeated WARNING log entries. The first failure is always logged.
+
+        .PARAMETER HostCount
+        Optional. For batched operations, the number of hosts in the batch. Used for display purposes.
+
+        .PARAMETER PollingIntervalSeconds
+        How often (in seconds) to check task status.
+        Default: 5. Valid range: 1-300 seconds.
 
         .PARAMETER ResourceName
         The name of the resource being checked (cluster name or host FQDN). Used for logging and display.
@@ -5653,22 +5660,18 @@ Function Wait-ComplianceCheckCompletion {
         .PARAMETER ResourceType
         The type of resource: "Cluster", "Standalone Host", or "Standalone Host Batch".
 
-        .PARAMETER WorkloadDomainName
-        The workload domain name containing the resource. Used for logging.
+        .PARAMETER TaskId
+        The SDDC Manager task ID to monitor (returned from Invoke-VcfUpdateCluster or Invoke-VcfUpdateDomain).
+
+        .PARAMETER TaskPollStallWarningSeconds
+        Threshold in seconds between poll iterations that triggers a stall warning in the log. Default is 300.
 
         .PARAMETER TimeoutSeconds
         Maximum time (in seconds) to wait for task completion before timing out.
         Default: 7200 (2 hours). Valid range: 60-86400 seconds.
 
-        .PARAMETER PollingIntervalSeconds
-        How often (in seconds) to check task status.
-        Default: 5. Valid range: 1-300 seconds.
-
-        .PARAMETER HostCount
-        Optional. For batched operations, the number of hosts in the batch. Used for display purposes.
-
-        .PARAMETER TaskPollStallWarningSeconds
-        Threshold in seconds between poll iterations that triggers a stall warning in the log. Default is 300.
+        .PARAMETER WorkloadDomainName
+        The workload domain name containing the resource. Used for logging.
 
         .EXAMPLE
         $result = Wait-ComplianceCheckCompletion -TaskId "abc-123" -ResourceName "sfo-m01-cl01" -ResourceType "Cluster" -WorkloadDomainName "sfo-m01" -TimeoutSeconds 3600 -PollingIntervalSeconds 10
@@ -5684,6 +5687,7 @@ Function Wait-ComplianceCheckCompletion {
     #>
 
     Param (
+        [Parameter(Mandatory = $false)] [ValidateRange(1, 100)] [Int]$ApiFailureLogIntervalCount = 5,
         [Parameter(Mandatory = $false)] [Int]$hostCount = 0,
         [Parameter(Mandatory = $false)] [ValidateRange(1, 300)] [Int]$pollingIntervalSeconds = 5,
         [Parameter(Mandatory = $true)] [ValidateNotNullOrEmpty()] [String]$ResourceName,
@@ -5700,6 +5704,7 @@ Function Wait-ComplianceCheckCompletion {
     $processTimer = Start-ProcessTimer
     $timedOut = $false
     $taskStatus = "Unknown"
+    $consecutiveApiFailures = 0
 
     # Determine display message based on resource type.
     if ($ResourceType -eq "Standalone Host Batch") {
@@ -5721,9 +5726,16 @@ Function Wait-ComplianceCheckCompletion {
         # Query task status with error handling (shared 404 mapping with transition poll loops).
         $taskFetch = Get-VcfTaskStateOrCompletedFromQueue -TaskId $TaskId
         if ($taskFetch.HadApiFailure) {
-            Write-LogMessage -Type ERROR -Message "Failed to query task status for $TaskId : $($taskFetch.ErrorRecord.Exception.Message)"
-            Write-Progress -Completed
-            throw $taskFetch.ErrorRecord
+            $consecutiveApiFailures++
+            if ($consecutiveApiFailures -eq 1 -or ($consecutiveApiFailures % $ApiFailureLogIntervalCount -eq 0)) {
+                Write-LogMessage -Type WARNING -Message "Network error querying task $TaskId (consecutive failures: $consecutiveApiFailures) — retrying in $pollingIntervalSeconds second(s): $($taskFetch.ErrorRecord.Exception.Message)"
+            }
+            Start-Sleep -Seconds $pollingIntervalSeconds
+            continue
+        }
+        if ($consecutiveApiFailures -gt 0) {
+            Write-LogMessage -Type INFO -Message "SDDC Manager connection restored after $consecutiveApiFailures consecutive network error(s) for task $TaskId."
+            $consecutiveApiFailures = 0
         }
         $taskResponse = $taskFetch.TaskResponse
         $taskStatus = $taskFetch.TaskStatus
@@ -5751,7 +5763,7 @@ Function Wait-ComplianceCheckCompletion {
             Write-LogMessage -Type WARNING -SuppressOutputToScreen -Message "More than $TaskPollStallWarningSeconds seconds have elapsed between task progress checks. This is unusual."
         }
 
-    } While ($taskStatus -eq 'In Progress')
+    } While ($taskStatus -eq 'In Progress' -or $taskStatus -eq 'Unknown')
 
     # Clean up progress display.
     Write-Progress -Completed
@@ -6124,7 +6136,7 @@ Function Invoke-ImageComplianceCheck {
 
     # --- INTERACTIVE MODE: Resource Selection ---
     # Display baseline-managed resources and prompt user to select one or more by ID.
-    if ($Script:Headless -eq "disabled") {
+    if (-not $Script:Headless) {
         Write-LogMessage -Type INFO -AppendNewLine -Message "Scanning for vLCM baseline (VUM) managed clusters/standalone-hosts..."
         $processTimer = Start-ProcessTimer
         $resourceListOutput = Get-BaselineManagedResources
@@ -6133,28 +6145,29 @@ Function Invoke-ImageComplianceCheck {
         Write-Host "`nSelect the vLCM baseline cluster(s)/standalone-host(s) to check for compliance with vLCM image management.`n"
 
         # Interactive resource selection loop (repeat until valid selection made).
+        $selectedResourceDetails = @()
         Do {
             $idSelection = Read-Host "Enter an id, a comma-delimited list of ids, or 'c' to cancel"
             # fail fast in canceled.
             if ($idSelection -eq 'c') {
                 Write-LogMessage -Type INFO -PrependNewLine -Message "Cancellation requested. Returning to main menu."
                 Show-AnyKey
-                Show-MainMenu
+                break
             }
             # Check if the Id selection is non-null.
             if ($idSelection) {
                 $processTimer = Start-ProcessTimer
-                $selectedResourceDetails = Get-BaselineManagedResources -IdSelection $idSelection
+                $selectedResourceDetails = @(Get-BaselineManagedResources -IdSelection $idSelection)
                 Stop-ProcessTimer -Timer $processTimer -Operation "Image seeding support check in compliance check workflow complete" -Interval "Milliseconds"
             }
-            # If ClusterName is null then no Id / ClusterName mapping was found.
-            if (-not $($selectedResourceDetails.ResourceId)) {
+            # If no resources were returned then no Id / ResourceId mapping was found.
+            if ($selectedResourceDetails.Count -eq 0) {
                 if ($idSelection -eq "") {
                     $idSelection = "<EMPTY>"
                 }
                 Write-LogMessage -Type ERROR -Message "Invalid id $idSelection chosen. Please try again."
             }
-        } while (-not $selectedResourceDetails.ResourceId)
+        } while ($selectedResourceDetails.Count -eq 0)
 
         # --- INTERACTIVE MODE: Image Seeding Eligibility Check ---
         # Image seeding allows auto-generation of vLCM images from baseline configurations.
@@ -6213,7 +6226,7 @@ Function Invoke-ImageComplianceCheck {
             if ($idSelection -eq 'c') {
                 Write-LogMessage -Type INFO -PrependNewLine -Message "Cancellation requested. Returning to main menu."
                 Show-AnyKey
-                Show-MainMenu
+                break
             }
             # Check if the Id selection is non-null.
             if ($idSelection) {
@@ -6300,7 +6313,7 @@ Function Invoke-ImageComplianceCheck {
                 }
             }
 
-            if ($Script:Headless -eq "enabled") {
+            if ($Script:Headless) {
                 # if image name is not specified, image seeding workflow is invoked.
                 if ([String]::IsNullOrEmpty($lineSddcManagerImageName)) {
                     # Reuse $workloadDomainId from line 4465 - already retrieved above.
@@ -6390,7 +6403,7 @@ Function Invoke-ImageComplianceCheck {
                 # Batches cannot span workload domain boundaries
 
                 # In interactive mode, use global variables; in headless mode, use resource properties
-                if ($Script:Headless -eq "enabled") {
+                if ($Script:Headless) {
                     $resourceImageSeeding = $resource.ImageSeedingWorkflow
                     $resourceImageName = $resource.SddcManagerImageName
                 } else {
@@ -6477,7 +6490,7 @@ Function Invoke-ImageComplianceCheck {
             $batchImageName = $null
             if ($batchKey -notmatch "_ImageSeeding") {
                 # In interactive mode, use global variable; in headless mode, use first host's property.
-                if ($Script:Headless -eq "enabled") {
+                if ($Script:Headless) {
                     $batchImageName = $batchHosts[0].SddcManagerImageName
                 } else {
                     $batchImageName = $SddcManagerImageName
@@ -6507,7 +6520,7 @@ Function Invoke-ImageComplianceCheck {
         $ResourceType = $selectedResource.ResourceType
         $workloadDomainId = $selectedResource.WorkloadDomainId
         $WorkloadDomainName = $selectedResource.WorkloadDomainName
-        if ($Script:Headless -eq "enabled") {
+        if ($Script:Headless) {
             $imageSeedingWorkflow = $selectedResource.ImageSeedingWorkflow
             if (-not $imageSeedingWorkflow) {
                 $SddcManagerImageName = $selectedResource.SddcManagerImageName
@@ -6797,7 +6810,7 @@ Function Invoke-HostRemediationOptionsConfig {
     }
 
     # Line break for improved readability.
-    if ($Script:Headless -eq "enabled" -and $action -eq "Create") {
+    if ($Script:Headless -and $action -eq "Create") {
         Write-Host ""
     }
 
@@ -6980,7 +6993,7 @@ Function Invoke-HostRemediationOptionsConfig {
         'RETRY' { Write-LogMessage -Type INFO -SuppressOutputToScreen -Message "The $remediationFailureAction hostRemediationOptions action selected with $remediationRetryCount retries at $remediationRetryDelay second delay with preRemediationPowerAction $preRemediationPowerAction is QuickBootEnabled $quickBootEnabled." }
         'FAIL'  { Write-LogMessage -Type INFO -SuppressOutputToScreen -Message "The $remediationFailureAction hostRemediationOptions action selected with preRemediationPowerAction $preRemediationPowerAction and QuickBootEnabled $quickBootEnabled." }
     }
-    if ($Script:Headless -eq "disabled") {
+    if (-not $Script:Headless) {
         return $hostRemediationOptions
     } else {
         if ($JsonOutputFile) {
@@ -7236,9 +7249,9 @@ Function Invoke-BatchedTransition {
                 }
             }
 
-            if ($Script:Headless -eq "disabled") {
+            if (-not $Script:Headless) {
                 Show-AnyKey
-                Show-MainMenu
+                break
             } else {
                 if ($JsonInputFile) {
                     Write-LogMessage -Type INFO -Message "Moving onto next batch..."
@@ -7253,7 +7266,7 @@ Function Invoke-BatchedTransition {
         if ($response -and -not ($Parallel -or $Silence)) {
             Test-SddcManagerConnection
             $initialTaskResult = Invoke-VcfGetTask -Id $response.Id -ErrorAction SilentlyContinue
-            $initialTotalStepCount = if ($initialTaskResult -and $initialTaskResult.SubTasks) { ($initialTaskResult.SubTasks | Measure-Object).Count } else { 0 }
+            $initialTotalStepCount = if ($initialTaskResult -and $initialTaskResult.SubTasks) { @($initialTaskResult.SubTasks).Count } else { 0 }
             $batchTaskId = $response.Id
 
             $batchStepLog = {
@@ -7389,6 +7402,10 @@ Function Invoke-VcfTransitionSubTaskPollLoop {
         .DESCRIPTION
         Consolidates duplicated Do/While polling used by Invoke-BatchedTransition and Wait-TransitionCompletion so timeout handling,
         token refresh, vCenter session refresh cadence, and stall warnings stay consistent.
+        Transient network errors are retried silently until the overall TimeoutSeconds is reached.
+
+        .PARAMETER ApiFailureLogIntervalCount
+        Number of consecutive network failures between repeated WARNING log entries. The first failure is always logged.
 
         .PARAMETER InitialTotalStepCount
         Sub-task count from the first Invoke-VcfGetTask result (may be zero until the task populates sub-tasks).
@@ -7419,6 +7436,7 @@ Function Invoke-VcfTransitionSubTaskPollLoop {
     #>
 
     Param (
+        [Parameter(Mandatory = $false)] [ValidateRange(1, 100)] [Int]$ApiFailureLogIntervalCount = 5,
         [Parameter(Mandatory = $false)] [Int]$InitialTotalStepCount = 0,
         [Parameter(Mandatory = $true)] [ValidateRange(1, 300)] [Int]$PollingIntervalSeconds,
         [Parameter(Mandatory = $true)] [ValidateNotNullOrEmpty()] [String]$TaskId,
@@ -7433,6 +7451,7 @@ Function Invoke-VcfTransitionSubTaskPollLoop {
     $taskStatus = "Unknown"
     $taskResponse = $null
     $pollCount = 0
+    $consecutiveApiFailures = 0
     [Int]$totalStepCount = $InitialTotalStepCount
 
     Do {
@@ -7440,6 +7459,9 @@ Function Invoke-VcfTransitionSubTaskPollLoop {
 
         if ($processTimer.Elapsed.TotalSeconds -gt $TimeoutSeconds) {
             Write-LogMessage -Type ERROR -Message $TimeoutLogMessage
+            if ($consecutiveApiFailures -gt 0) {
+                Write-LogMessage -Type WARNING -Message "SDDC Manager was unreachable for the last $consecutiveApiFailures consecutive poll(s) when the timeout was reached for task $TaskId. The transition may still be running."
+            }
             Write-Progress -Id 1 -Completed
             Write-Progress -Id 2 -Completed
             return [PSCustomObject]@{
@@ -7453,10 +7475,16 @@ Function Invoke-VcfTransitionSubTaskPollLoop {
 
         $taskFetch = Get-VcfTaskStateOrCompletedFromQueue -TaskId $TaskId -TaskNotFoundDebugMessage $TaskNotFoundDebugMessage
         if ($taskFetch.HadApiFailure) {
-            Write-LogMessage -Type ERROR -Message "Failed to query task status for $TaskId : $($taskFetch.ErrorRecord.Exception.Message)"
-            Write-Progress -Id 1 -Completed
-            Write-Progress -Id 2 -Completed
-            throw $taskFetch.ErrorRecord
+            $consecutiveApiFailures++
+            if ($consecutiveApiFailures -eq 1 -or ($consecutiveApiFailures % $ApiFailureLogIntervalCount -eq 0)) {
+                Write-LogMessage -Type WARNING -Message "Network error querying task $TaskId (consecutive failures: $consecutiveApiFailures) — retrying in $PollingIntervalSeconds second(s): $($taskFetch.ErrorRecord.Exception.Message)"
+            }
+            Start-Sleep -Seconds $PollingIntervalSeconds
+            continue
+        }
+        if ($consecutiveApiFailures -gt 0) {
+            Write-LogMessage -Type INFO -Message "SDDC Manager connection restored after $consecutiveApiFailures consecutive network error(s) for task $TaskId."
+            $consecutiveApiFailures = 0
         }
         $taskResponse = $taskFetch.TaskResponse
         $taskStatus = $taskFetch.TaskStatus
@@ -7472,7 +7500,7 @@ Function Invoke-VcfTransitionSubTaskPollLoop {
             Test-VcentersConnection | Out-Null
         }
 
-        $currentStepCount = ($taskResponse.SubTasks | Where-Object -Property Status -eq "SUCCESSFUL" | Measure-Object).Count
+        $currentStepCount = @($taskResponse.SubTasks | Where-Object -Property Status -eq "SUCCESSFUL").Count
         $inProgressCandidates = @($taskResponse.SubTasks | Where-Object -Property Status -eq "IN_PROGRESS")
         $inProgressStepName = "Waiting..."
         if ($inProgressCandidates.Count -gt 0) {
@@ -7487,7 +7515,7 @@ Function Invoke-VcfTransitionSubTaskPollLoop {
         }
 
         if ($totalStepCount -eq 0 -and $taskResponse.SubTasks) {
-            $totalStepCount = ($taskResponse.SubTasks | Measure-Object).Count
+            $totalStepCount = @($taskResponse.SubTasks).Count
         }
 
         $elapsedRounded = [math]::Round($processTimer.Elapsed.TotalSeconds, 0)
@@ -7500,7 +7528,7 @@ Function Invoke-VcfTransitionSubTaskPollLoop {
             Write-LogMessage -Type WARNING -SuppressOutputToScreen -Message "More than $TaskPollStallWarningSeconds seconds have elapsed between task progress checks. This is unusual."
         }
 
-    } While ($taskStatus -eq "In Progress")
+    } While ($taskStatus -eq "In Progress" -or $taskStatus -eq "Unknown")
 
     Write-Progress -Id 1 -Completed
     Write-Progress -Id 2 -Completed
@@ -7577,7 +7605,7 @@ Function Wait-TransitionCompletion {
 
     # Determine the total number of transition steps required.
     $initialTaskResult = Invoke-VcfGetTask -Id $TaskId -ErrorAction SilentlyContinue
-    $initialTotalStepCount = if ($initialTaskResult -and $initialTaskResult.SubTasks) { ($initialTaskResult.SubTasks | Measure-Object).Count } else { 0 }
+    $initialTotalStepCount = if ($initialTaskResult -and $initialTaskResult.SubTasks) { @($initialTaskResult.SubTasks).Count } else { 0 }
 
     $transitionStepLog = {
         param(
@@ -7761,7 +7789,7 @@ Function Invoke-TransitionBaselineManagedResource {
         }
     } else {
         # Menu-driven workflow.
-        if ($Script:Headless -eq "disabled") {
+        if (-not $Script:Headless) {
             # Refresh and display a list of vLCM baseline managed clusters.
             Write-LogMessage -Type INFO -AppendNewLine -Message "Scanning for vLCM baseline (VUM) managed clusters/standalone hosts..."
             $processTimer = Start-ProcessTimer
@@ -7769,6 +7797,7 @@ Function Invoke-TransitionBaselineManagedResource {
             Stop-ProcessTimer -Timer $processTimer -Operation "Listing all baseline managed clusters and standalone hosts within transition workflow" -Interval "Seconds"
             Write-Host $resourceListOutput
         Write-Host "`nSelect the vLCM baseline clusters/standalone hosts to transition to vLCM image management.`n"
+        $selectedResourceDetails = @()
         Do {
             $idSelection = Read-Host "Enter an id, a comma-delimited list of ids in order, or 'c' to cancel"
 
@@ -7776,20 +7805,20 @@ Function Invoke-TransitionBaselineManagedResource {
             if ($idSelection -eq 'c') {
                 Write-LogMessage -Type INFO -AppendNewLine -Message "Cancellation requested. Returning to main menu."
                 Show-AnyKey
-                Show-MainMenu
+                break
             }
             # Check if the Id selection is non-null.
             if ($idSelection) {
-                    $selectedResourceDetails = Get-BaselineManagedResources -IdSelection $idSelection
+                $selectedResourceDetails = @(Get-BaselineManagedResources -IdSelection $idSelection)
             }
-                # If the SelectedResourceDetails is null then no Id / ClusterName mapping was found.
-                if (-not $selectedResourceDetails.ResourceId) {
+            # If no resources were returned then no Id / ResourceId mapping was found.
+            if ($selectedResourceDetails.Count -eq 0) {
                 if ($idSelection -eq "") {
                     $idSelection = "<EMPTY>"
                 }
                 Write-LogMessage -Type ERROR -Message "Invalid Id `"$idSelection`" chosen. Please try again."
             }
-            } while (-not $selectedResourceDetails.ResourceId)
+        } while ($selectedResourceDetails.Count -eq 0)
 
         Write-Host "`nConfirm you have reviewed the image compliance findings stored in `"$logFolder`" before proceeding.`n" -ForegroundColor Yellow
         $decision = New-ChoiceMenu -Question "Would you like to continue?" -DefaultAnswer no
@@ -8036,7 +8065,7 @@ Function Invoke-TransitionBaselineManagedResource {
                     }
                 }
 
-                if ($Script:Headless -eq "disabled") {
+                if (-not $Script:Headless) {
                     Show-AnyKey
                     Show-MainMenu
                 } else {
@@ -8077,7 +8106,7 @@ Function Invoke-TransitionBaselineManagedResource {
                     }
                 }
 
-                if ($Script:Headless -eq "disabled") {
+                if (-not $Script:Headless) {
                     Show-AnyKey
                     Show-MainMenu
                 } else {
@@ -8147,10 +8176,10 @@ Function Remove-TemporaryCluster {
 
     # headless operations require input validation, which is otherwise handled, in interactive operations,.
     # by the issuing function.
-    if ($Script:Headless -eq "enabled") {
+    if ($Script:Headless) {
 
         $isConnectedVcenter = @(Get-Variable -Name 'DefaultViServers' -Scope Global -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Value | Where-Object IsConnected -eq $true | Where-Object Name -eq $temporaryClusterVcenter)
-        if (($isConnectedVcenter | Measure-Object).Count -eq 0) {
+        if ($isConnectedVcenter.Count -eq 0) {
             Write-LogMessage -Type ERROR -Message "vCenter `"$temporaryClusterVcenter`" not found in list of connected vCenters."
             Exit-WithCode -ExitCode $Script:ExitCodes.CONNECTION_ERROR
         }
@@ -8166,7 +8195,7 @@ Function Remove-TemporaryCluster {
     [array]$clusterHostMembersFound = @(Get-Cluster -Server $temporaryClusterVcenter -Name $temporaryClusterName -ErrorAction SilentlyContinue | Get-VMHost | Select-Object -ExpandProperty Name | Sort-Object)
 
     # Do not delete a cluster that has ESX hosts.
-    if (($clusterHostMembersFound | Measure-Object).Count -eq 0) {
+    if ($clusterHostMembersFound.Count -eq 0) {
         Write-LogMessage -Type INFO -Message "Safety check passed - No ESX hosts detected in cluster `"$temporaryClusterName`" in vCenter `"$temporaryClusterVcenter`"."
         try {
             Remove-Cluster -Server $temporaryClusterVcenter -Cluster $temporaryClusterName -Confirm:$false -ErrorAction Stop
@@ -8283,7 +8312,7 @@ Function Show-TaskStatus {
     if (-not ($response)) {
             Write-LogMessage -type INFO -Message "No $TaskType tasks found in `"$Global:SddcManagerFqdn`"."
             Show-AnyKey
-            if ($Script:Headless -eq 'disabled') {
+            if (-not $Script:Headless) {
                 Show-MainMenu
             }
             return
@@ -8510,7 +8539,7 @@ Function Show-TaskStatus {
         }
 
         # Only show the tabular view if the -silent option is not used.
-        if ($Script:logOnly -eq "disabled") {
+        if (-not $Script:logOnly) {
            # Separate header rows (first 2 items) from data rows, sort data with natural sorting, then recombine.
            $headerRows = $tasks[0..1]
            # Natural sort: extract numeric portion from name for proper numeric ordering (esx-9 before esx-10).
@@ -8760,8 +8789,8 @@ Function Show-ResourceTransitionStatus {
         if ($inProgressTask -and $inProgressTask.Name) {
             Write-LogMessage -Type INFO -Message "The current sub-step is being processed: $($inProgressTask.Name)"
         }
-        $totalStepCount = ($subTasks | Measure-Object).Count
-        $currentStepCount = ($subTasks | Where-Object -Property Status -eq "SUCCESSFUL" | Measure-Object).Count
+        $totalStepCount = @($subTasks).Count
+        $currentStepCount = @($subTasks | Where-Object -Property Status -eq "SUCCESSFUL").Count
 
         Write-LogMessage -Type INFO -Message "$currentStepCount steps out of $totalStepCount steps completed."
         Write-LogMessage -Type INFO -Message "Status of the transition is: $($response.Status)"
@@ -8923,7 +8952,7 @@ Function Disconnect-Vcenter {
 
         # Handle an edge case where non-tracked vCenters are connected.
         [array]$stillConnected = @(Get-Variable -Name 'DefaultViServers' -Scope Global -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Value | Where-Object IsConnected -eq $true)
-        if (($stillConnected | Measure-Object).Count -gt 0) {
+        if ($stillConnected.Count -gt 0) {
             Disconnect-VIServer -Server * -Force -Confirm:$false -ErrorAction SilentlyContinue
         }
     }
@@ -8961,7 +8990,7 @@ Function Show-IncompleteTasks {
     if (-not $response) {
         Write-LogMessage -Type INFO -Message "No failed vLCM transition tasks found."
         Show-AnyKey
-        if ($Script:Headless -eq "disabled") {
+        if (-not $Script:Headless) {
             Show-MainMenu
         }
         return
@@ -9007,7 +9036,7 @@ Function Show-IncompleteTasks {
     if ($vlcmTransitionIndex -eq "1") {
         Write-LogMessage -Type INFO -Message "No failed vLCM cluster transition tasks located."
         Show-AnyKey
-        if ($Script:Headless -eq "disabled") {
+        if (-not $Script:Headless) {
             Show-MainMenu
         }
         return
@@ -9027,7 +9056,7 @@ Function Show-IncompleteTasks {
     $vlcmTransitionDisplayObject = $headerRows + $dataRows
 
     # headless output is almost identical to non-headless (only the Id is elided)
-    if ($Script:Headless -eq "enabled") {
+    if ($Script:Headless) {
         Write-Host "Clusters that were not successfully transitioned to vLCM image management:`n" -ForegroundColor Green;
         $vlcmTransitionDisplayObject | Format-Table -Property @{Expression = " " }, ClusterName, WorkloadDomainName, TaskId, TaskCompletionTime  -Autosize -HideTableHeaders | Out-Host
         Exit-WithCode -ExitCode $Script:ExitCodes.SUCCESS
@@ -9060,6 +9089,32 @@ Function Show-IncompleteTasks {
 #endregion
 
 #region Environment and Menus
+Function Get-InstalledPowerCliModules {
+
+    <#
+        .SYNOPSIS
+        Returns a hashtable of the highest installed versions of relevant PowerCLI modules.
+
+        .DESCRIPTION
+        Performs a single Get-Module -ListAvailable scan for all five relevant PowerCLI packages.
+        The hashtable is keyed by module name; each value is the highest-version ModuleInfo object
+        found on PSModulePath. Returns an empty hashtable if no matching modules are installed.
+
+        .OUTPUTS
+        [hashtable]
+        Keys: VCF.PowerCLI, VMware.PowerCLI, VMware.VimAutomation.Core, VMware.VimAutomation.Common,
+        VMware.VimAutomation.Sdk. Any absent module is simply absent from the hashtable.
+    #>
+
+    $moduleNames = @('VCF.PowerCLI', 'VMware.PowerCLI', 'VMware.VimAutomation.Core', 'VMware.VimAutomation.Common', 'VMware.VimAutomation.Sdk')
+    $modules = @{}
+    Get-Module -ListAvailable -Name $moduleNames -ErrorAction SilentlyContinue |
+        Sort-Object -Property Version -Descending |
+        Group-Object -Property Name |
+        ForEach-Object { $modules[$_.Name] = $_.Group[0] }
+    return $modules
+}
+
 Function Get-EnvironmentSetup {
 
     <#
@@ -9081,11 +9136,13 @@ Function Get-EnvironmentSetup {
 
     $powerShellRelease = $($PSVersionTable.PSVersion).ToString()
 
-    $vcfPowerCliModule = Get-Module -ListAvailable -Name VCF.PowerCLI -ErrorAction SilentlyContinue | Sort-Object Revision | Select-Object -First 1
-    $vcfPowerCliRelease = if ($vcfPowerCliModule) { $vcfPowerCliModule.Version } else { $null }
+    $envModules = Get-InstalledPowerCliModules
 
-    $vmwarePowerCliModule = Get-Module -ListAvailable -Name VMware.PowerCLI -ErrorAction SilentlyContinue | Sort-Object Revision | Select-Object -First 1
-    $vmwarePowerCliRelease = if ($vmwarePowerCliModule) { $vmwarePowerCliModule.Version } else { $null }
+    $vcfPowerCliRelease = if ($envModules['VCF.PowerCLI']) { $envModules['VCF.PowerCLI'].Version } else { $null }
+    $vmwarePowerCliRelease = if ($envModules['VMware.PowerCLI']) { $envModules['VMware.PowerCLI'].Version } else { $null }
+    $vimCoreRelease = if ($envModules['VMware.VimAutomation.Core']) { $envModules['VMware.VimAutomation.Core'].Version } else { $null }
+    $vimCommonRelease = if ($envModules['VMware.VimAutomation.Common']) { $envModules['VMware.VimAutomation.Common'].Version } else { $null }
+    $vimSdkRelease = if ($envModules['VMware.VimAutomation.Sdk']) { $envModules['VMware.VimAutomation.Sdk'].Version } else { $null }
 
     $operatingSystem = $($PSVersionTable.OS)
     $macOsVersion = $null
@@ -9094,7 +9151,7 @@ Function Get-EnvironmentSetup {
     # Work-around for MacOS which displays Darwin kernel release from $($PSVersionTable.OS). However, if this call fails, revert to what we know.
     if ($isMacOS) {
         try {
-            $macOsVersion = (system_profiler SPSoftwareDataType -json | ConvertFrom-Json | ForEach-Object spsoftwaredatatype | Where-Object _name -eq os_overview).os_version
+            $macOsVersion = & sw_vers -productVersion
         } catch {
             Write-LogMessage -Type DEBUG -Message "Failed to get macOS version: $_"
         }
@@ -9119,12 +9176,11 @@ Function Get-EnvironmentSetup {
 
     Write-LogMessage -Type INFO -SuppressOutputToScreen -Message "Client PowerShell version is $powerShellRelease"
 
-    if ($vcfPowerCliRelease) {
-        Write-LogMessage -Type INFO -SuppressOutputToScreen -Message "Client VCF.PowerCLI version is $vcfPowerCliRelease."
-    }
-    if ($vmwarePowerCliRelease) {
-        Write-LogMessage -Type INFO -SuppressOutputToScreen -Message "Client VMware.PowerCLI version is $vmwarePowerCliRelease."
-    }
+    if ($vcfPowerCliRelease) { Write-LogMessage -Type INFO -SuppressOutputToScreen -Message "Client VCF.PowerCLI version is $vcfPowerCliRelease." }
+    if ($vmwarePowerCliRelease) { Write-LogMessage -Type INFO -SuppressOutputToScreen -Message "Client VMware.PowerCLI version is $vmwarePowerCliRelease." }
+    if ($vimCoreRelease) { Write-LogMessage -Type DEBUG -Message "VMware.VimAutomation.Core version is $vimCoreRelease." }
+    if ($vimCommonRelease) { Write-LogMessage -Type DEBUG -Message "VMware.VimAutomation.Common version is $vimCommonRelease." }
+    if ($vimSdkRelease) { Write-LogMessage -Type DEBUG -Message "VMware.VimAutomation.Sdk version is $vimSdkRelease." }
     if (-not $vcfPowerCliRelease -and -not $vmwarePowerCliRelease) {
         Write-LogMessage -Type ERROR -SuppressOutputToScreen -Message "Client PowerCLI not installed."
     }
@@ -9164,13 +9220,21 @@ Function Get-Preconditions {
     # PowerCLI Module and Version Check.
     Write-LogMessage -Type DEBUG -Message "Entered Get-Preconditions function (SkipVersionCheck: $SkipVersionCheck)..."
 
-    $vcfModuleName = "VCF.PowerCLI"
-    $vmwareModuleName = "VMware.PowerCLI"
+    # VCF.PowerCLI 9 ships VMware.VimAutomation.Core (and Common/Sdk) at the 13.4-era version.
+    # VMware.PowerCLI 13.3 ships those same submodules at the 13.3-era version. Having both umbrella
+    # packages installed causes version ambiguity and potential type conflicts. Anything below 13.4
+    # in a shared submodule indicates a VMware.PowerCLI 13.3 installation may be interfering.
+    $minimumSubmoduleVersion = [version]'13.4.0'
 
-    $vcfPowerCliModule = (Get-Module -ListAvailable -Name $vcfModuleName -ErrorAction SilentlyContinue) | Sort-Object Revision | Select-Object -First 1
-    $vmwarePowerCliModule = (Get-Module -ListAvailable -Name $vmwareModuleName -ErrorAction SilentlyContinue) | Sort-Object Revision | Select-Object -First 1
+    $foundModules = Get-InstalledPowerCliModules
 
-    # VMware.PowerCLI is not supported - only VCF.PowerCLI.
+    $vcfPowerCliModule = $foundModules['VCF.PowerCLI']
+    $vmwarePowerCliModule = $foundModules['VMware.PowerCLI']
+    $vimCoreModule = $foundModules['VMware.VimAutomation.Core']
+    $vimCommonModule = $foundModules['VMware.VimAutomation.Common']
+    $vimSdkModule = $foundModules['VMware.VimAutomation.Sdk']
+
+    # VMware.PowerCLI alone is not sufficient — only VCF.PowerCLI is supported.
     if ($vmwarePowerCliModule -and -not $vcfPowerCliModule) {
         Write-LogMessage -Type EXCEPTION -AppendNewLine -Message "VMware.PowerCLI version $($vmwarePowerCliModule.Version) detected. This script requires VCF.PowerCLI $minimumVcfPowerCliVersion or later. Please upgrade."
         Exit-WithCode -ExitCode $Script:ExitCodes.PRECONDITION_ERROR
@@ -9182,12 +9246,33 @@ Function Get-Preconditions {
         Exit-WithCode -ExitCode $Script:ExitCodes.PRECONDITION_ERROR
     }
 
-    # VCF.PowerCLI must meet minimum version requirement.
-    # Skip version check if running in test mode (for automated testing).
+    # VCF.PowerCLI must meet the minimum version requirement.
     $installedVersion = $vcfPowerCliModule.Version
     if ($env:PESTER_TEST_MODE -ne "1" -and -not $SkipVersionCheck -and $installedVersion -lt [Version]$minimumVcfPowerCliVersion) {
         Write-LogMessage -Type EXCEPTION -AppendNewLine -Message "VCF.PowerCLI version $installedVersion is installed. This script requires VCF.PowerCLI $minimumVcfPowerCliVersion or later. Please upgrade."
         Exit-WithCode -ExitCode $Script:ExitCodes.PRECONDITION_ERROR
+    }
+
+    # Conflict check: VMware.PowerCLI 13.3 ships 13.3-era submodules (VMware.VimAutomation.Core 13.3.x,
+    # VMware.VimAutomation.Common 13.3.x, VMware.VimAutomation.Sdk 13.3.x) that conflict with the
+    # 13.4-era submodules required by VCF.PowerCLI 9. PowerShell loads the highest available version,
+    # so 13.4 wins when both are present, but the VMware.PowerCLI 13.3 manifest remains and can cause
+    # unexpected behaviour. Advise removal of the conflicting umbrella package.
+    if ($vmwarePowerCliModule -and [version]$vmwarePowerCliModule.Version -lt $minimumSubmoduleVersion) {
+        Write-LogMessage -Type WARNING -Message "VMware.PowerCLI $($vmwarePowerCliModule.Version) is installed alongside VCF.PowerCLI $installedVersion. VMware.PowerCLI 13.3 ships 13.3-era submodule versions (e.g. VMware.VimAutomation.Core 13.3.x) that conflict with VCF.PowerCLI 9's required 13.4-era submodules."
+        Write-LogMessage -Type ADVISORY -Message "To eliminate potential submodule conflicts: Uninstall-Module -Name VMware.PowerCLI -AllVersions"
+    }
+
+    # Submodule version check: if VMware.VimAutomation.Core (the key shared submodule) is below 13.4,
+    # the 13.3-era version may be what PowerShell actually loads, breaking VCF.PowerCLI 9 compatibility.
+    foreach ($submoduleEntry in @(
+        [pscustomobject]@{ Name = 'VMware.VimAutomation.Core';   Module = $vimCoreModule }
+        [pscustomobject]@{ Name = 'VMware.VimAutomation.Common'; Module = $vimCommonModule }
+        [pscustomobject]@{ Name = 'VMware.VimAutomation.Sdk';    Module = $vimSdkModule }
+    )) {
+        if ($submoduleEntry.Module -and [version]$submoduleEntry.Module.Version -lt $minimumSubmoduleVersion) {
+            Write-LogMessage -Type WARNING -Message "$($submoduleEntry.Name) $($submoduleEntry.Module.Version) is the highest available version. VCF.PowerCLI 9 requires $($submoduleEntry.Name) 13.4 or later — a VMware.PowerCLI 13.3 installation may be overriding the required submodule version."
+        }
     }
 
     if ($env:PESTER_TEST_MODE -eq "1") {
@@ -9198,9 +9283,8 @@ Function Get-Preconditions {
         Write-LogMessage -Type DEBUG -Message "VCF.PowerCLI version $installedVersion meets minimum requirement ($minimumVcfPowerCliVersion)."
     }
 
-    # Verify critical VCF.PowerCLI cmdlets are available.
-    # These cmdlets use -ErrorAction SilentlyContinue and return $null if missing,
-    # so we must explicitly check for their existence to provide clear error messages.
+    # Verify critical VCF.PowerCLI cmdlets are available. A single Get-Command call for all cmdlets
+    # is substantially faster than a per-cmdlet loop (1 call vs one per cmdlet).
     Write-LogMessage -Type DEBUG -Message "Verifying VCF.PowerCLI cmdlet availability..."
     $criticalCmdlets = @(
         'Initialize-VcfClusterImageComplianceCheckSpec',
@@ -9247,12 +9331,10 @@ Function Get-Preconditions {
     if ($env:PESTER_TEST_MODE -eq "1") {
         Write-LogMessage -Type DEBUG -Message "Running in test mode - skipping VCF.PowerCLI cmdlet availability checks."
     } else {
-        $missingCmdlets = @()
-        foreach ($cmdlet in $criticalCmdlets) {
-            if (-not (Get-Command -Name $cmdlet -ErrorAction SilentlyContinue)) {
-                $missingCmdlets += $cmdlet
-            }
-        }
+        # Single Get-Command call for all cmdlets — Get-Command accepts an array of names and
+        # returns only the commands that exist, so the diff against $criticalCmdlets is the missing set.
+        [array]$foundCmdlets = @(Get-Command -Name $criticalCmdlets -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+        [array]$missingCmdlets = @($criticalCmdlets | Where-Object { $_ -notin $foundCmdlets })
 
         if ($missingCmdlets.Count -gt 0) {
             Write-LogMessage -Type ERROR -Message "The following VCF.PowerCLI cmdlets are missing:"
@@ -9333,12 +9415,66 @@ Function Show-Version {
     )
     Write-LogMessage -Type DEBUG -Message "Entered Show-Version function..."
 
-    if (-not $Silence) {
-        Write-LogMessage -Type INFO -Message "Version: $scriptVersion"
-    } else {
-        Write-LogMessage -Type INFO -SuppressOutputToScreen -Message "Version: $scriptVersion"
+    Write-LogMessage -Type INFO -SuppressOutputToScreen:$Silence -Message "Version: $scriptVersion"
+}
+Function Invoke-LogCollection {
+
+    <#
+        .SYNOPSIS
+        Creates a timestamped zip archive of all log files in the logs subdirectory.
+
+        .DESCRIPTION
+        Collects all *.log files from $Script:LogFolder and compresses them into a zip file
+        saved alongside the script. Each collected file is listed in the output, followed by
+        the full path to the created archive.
+
+        .EXAMPLE
+        Invoke-LogCollection
+
+        .OUTPUTS
+        [bool]
+        Returns $true when the archive is created successfully.
+        Returns $false when the log folder is missing, contains no log files, or archive creation fails.
+    #>
+
+    Write-LogMessage -Type DEBUG -Message "Entered Invoke-LogCollection function..."
+
+    if (-not (Test-Path -LiteralPath $Script:LogFolder -PathType Container)) {
+        Write-LogMessage -Type ERROR -Message "Log folder not found: $Script:LogFolder"
+        return $false
+    }
+
+    [array]$logFiles = @(Get-ChildItem -LiteralPath $Script:LogFolder -Filter "*.log" -File -ErrorAction SilentlyContinue)
+    if ($logFiles.Count -eq 0) {
+        Write-LogMessage -Type WARNING -Message "No log files found in: $Script:LogFolder"
+        return $false
+    }
+
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $zipFileName = "VcfBaselineClusterTransition-logs-$stamp.zip"
+    $zipDestinationPath = Join-Path -Path $PSScriptRoot -ChildPath $zipFileName
+
+    # Remove any pre-existing zip at the same path to allow Compress-Archive to create cleanly.
+    if (Test-Path -LiteralPath $zipDestinationPath -PathType Leaf) {
+        Remove-Item -LiteralPath $zipDestinationPath -Force -ErrorAction SilentlyContinue
+    }
+
+    Write-LogMessage -Type INFO -Message "Collecting $($logFiles.Count) log file(s) into archive..."
+
+    try {
+        Compress-Archive -Path $logFiles.FullName -DestinationPath $zipDestinationPath -ErrorAction Stop
+
+        foreach ($logFile in $logFiles) {
+            Write-LogMessage -Type INFO -Message "  Added: $($logFile.Name)"
+        }
+        Write-LogMessage -Type INFO -AppendNewLine -Message "Log archive saved to: $zipDestinationPath"
+        return $true
+    } catch {
+        Write-LogMessage -Type ERROR -Message "Failed to create log archive: $($_.Exception.Message)"
+        return $false
     }
 }
+
 Function Show-Help {
 
     <#
@@ -9370,17 +9506,19 @@ Function Show-Help {
     Write-Output "   -ResourceType <Resource Type>      #   * Optional parameter: Resource Type: <`"Cluster`" or `"Standalone Host`">."
     Write-Output "   -Silence                           #   * Optional parameter: Silence."
     Write-Output "   -WorkloadDomainName <WLD>          #   * Optional parameter: Workload Domain Name.`n"
-    Write-Output "-Connect                              # Connect to SDDC Manager and Workload Domain vCenter(s)."
-    Write-Output "   -Silence                           #   * Optional parameter: Silence."
-    Write-Output "   -JsonInput <credential file>       #   * Optional parameter: override for credential file (default: SddcManagerCredentials.json).`n"
+    Write-Output "-CollectLogs                          # Create a timestamped zip archive of all log files in the logs subdirectory."
+    Write-Output "                                      #   Output: <script dir>/VcfBaselineClusterTransition-logs-<timestamp>.zip`n"
     Write-Output "-ComplianceCheck                      # Check if a cluster is compatible with an image."
-    Write-Output "    ResourceName <Resource Name>      #   * Optional parameter if JsonInput is not specified: Resource Name."
-    Write-Output "    ResourceType <Resource Type>      #   * Optional parameter if JsonInput is not specified: Resource Type (`"Cluster`" or `"Standalone Host`")."
+    Write-Output "   -ResourceName <Resource Name>      #   * Optional parameter if JsonInput is not specified: Resource Name."
+    Write-Output "   -ResourceType <Resource Type>      #   * Optional parameter if JsonInput is not specified: Resource Type (`"Cluster`" or `"Standalone Host`")."
     Write-Output "   -SddcManagerImageName <ImageName>  #   * Optional parameter if JsonInput is not specified (or image seeding used): Image Name."
     Write-Output "   -JsonInput <JSON file>             #   * Optional parameter if Cluster/SddcManager is not specified: JsonInput."
     Write-Output "   -Parallel                          #   * Optional parameter: parallelize the cluster compliance checks (used in combination with -JsonInput)"
     Write-Output "   -Silence                           #   * Optional parameter: Silence."
     Write-Output "   -WorkloadDomainName <WLD>          #   * Optional parameter if JsonInput is not specified: Workload Domain Name.`n"
+    Write-Output "-Connect                              # Connect to SDDC Manager and Workload Domain vCenter(s)."
+    Write-Output "   -Silence                           #   * Optional parameter: Silence."
+    Write-Output "   -JsonInput <credential file>       #   * Optional parameter: override for credential file (default: SddcManagerCredentials.json).`n"
     Write-Output "-CreateHostRemediationOptionsFile     # Create a HostRemediationOptions override file for use with the transition step."
     Write-Output "   -JsonOutput <JSON file>            #   * Mandatory parameter: json output file to save the HostRemediationOptions configuration.`n"
     Write-Output "-DeleteImageFromSddcManager           # Delete Image from SDDC Manager (use in case of misnamed image)."
@@ -9452,7 +9590,7 @@ Function Show-MainMenu {
 
     $errout = ""
 
-    Do {
+    while ($true) {
         $sddcConn = Get-Variable -Name 'defaultSddcManagerConnections' -ErrorAction SilentlyContinue
         $activeSddcConn = if ($sddcConn -and $sddcConn.Value) { @($sddcConn.Value) | Where-Object { $_.IsConnected } | Select-Object -First 1 } else { $null }
         if ($activeSddcConn) {
@@ -9475,9 +9613,10 @@ Function Show-MainMenu {
         Write-Host -Object " 9. (Optional) Show resource transition status." -ForegroundColor White
         Write-Host -Object " 10. (Optional) Show compliance check status." -ForegroundColor White
         Write-Host -Object " 11. (Optional) Show vLCM images in SDDC Manager." -ForegroundColor White
+        Write-Host -Object " 12. (Optional) Collect logs for support (zip logs folder)." -ForegroundColor White
         Write-Host -Object " Q. Press Q to Quit" -ForegroundColor Cyan
         if ($errout) { Write-Host -Object $errout -ForegroundColor Red }
-        $menuInput = Read-Host -Prompt ' (1-11 or Q)'
+        $menuInput = Read-Host -Prompt ' (1-12 or Q)'
         $menuInput = $menuInput -replace "`t|`n|`r",""
         Switch ($menuInput)
         {
@@ -9487,28 +9626,28 @@ Function Show-MainMenu {
                 Connect-SddcManager
                 Connect-Vcenter
                 Show-AnyKey
-                Show-MainMenu
+                break
             }
             2
             {
                 Clear-Host
                 Import-ImageFromVcenter
                 Show-AnyKey
-                Show-MainMenu
+                break
             }
             3
             {
                 Clear-Host
                 Invoke-ImageComplianceCheck
                 Show-AnyKey
-                Show-MainMenu
+                break
             }
             4
             {
                 Clear-Host
                 Invoke-TransitionBaselineManagedResource
                 Show-AnyKey
-                Show-MainMenu
+                break
             }
             5
             {
@@ -9519,49 +9658,56 @@ Function Show-MainMenu {
                 Disconnect-Vcenter
                 }
                 Show-AnyKey
-                Show-MainMenu
+                break
             }
             6
             {
                 Clear-Host
                 Show-IncompleteTasks
                 Show-AnyKey
-                Show-MainMenu
+                break
             }
             7
             {
                 Clear-Host
                 Remove-ImageFromSddcManager
                 Show-AnyKey
-                Show-MainMenu
+                break
             }
             8
             {
                 Clear-Host
                 Show-Version
                 Show-AnyKey
-                Show-MainMenu
+                break
             }
             9
             {
                 Clear-Host
                 Show-ResourceTransitionStatus -ReturnSummary
                 Show-AnyKey
-                Show-MainMenu
+                break
             }
             10
             {
                 Clear-Host
                 Show-TaskStatus -TaskType ComplianceCheck
                 Show-AnyKey
-                Show-MainMenu
+                break
             }
             11
             {
                 Clear-Host
                 Get-SddcManagerImages -ShowAll
                 Show-AnyKey
-                Show-MainMenu
+                break
+            }
+            12
+            {
+                Clear-Host
+                Invoke-LogCollection | Out-Null
+                Show-AnyKey
+                break
             }
             Q
             {
@@ -9579,7 +9725,6 @@ Function Show-MainMenu {
             }
         }
     }
-    Until ($menuInput -eq 'q')
 }
 
 # Variables and Constants
@@ -9596,7 +9741,7 @@ $minimumSahRelease = '9.1.0.0'
 $minimumImageCatalogSupportRelease = '9.0.0.0'
 $clusterVsphereImageSeedingSupport = "8.0.3"
 $standAloneHostVsphereImageSeedingSupport = "8.0.3"
-$Script:logOnly = "disabled"
+$Script:logOnly = $false
 
 New-LogFile
 Get-Preconditions -SkipVersionCheck:$SkipPowercliVersionCheck
@@ -9615,7 +9760,7 @@ if ($Help) {
 }
 
 # Assume headless mode until all conditions have been checked.
-$Script:Headless = 'enabled'
+$Script:Headless = $true
 
 # Initialize VxRail mode detection (set to False until Connect-Vcenter determines otherwise).
 $Script:vxRailMode = $false
@@ -9625,10 +9770,16 @@ $sddcManagerCredentialsJson = Join-Path -Path $PSScriptRoot -ChildPath "SddcMana
 
 # If Silence is set, the Write-LogMessage function will not send output to the screen.
 if ($Silence) {
-    $Script:logOnly = "enabled"
+    $Script:logOnly = $true
 }
 
 switch ($true) {
+    $CollectLogs {
+        $collectionSucceeded = Invoke-LogCollection
+        Exit-WithCode -ExitCode $(if ($collectionSucceeded) { $Script:ExitCodes.SUCCESS } else { $Script:ExitCodes.GENERAL_ERROR })
+        break
+    }
+
     $Connect {
         if ($JsonInput) {
             $sddcManagerCredentialsJson = $JsonInput
@@ -9713,7 +9864,7 @@ switch ($true) {
     $CreateHostRemediationOptionsFile {
         if ($Silence) {
             # Re-enable logging to log the following error message.
-            $Script:logOnly = "disabled"
+            $Script:logOnly = $false
             Write-LogMessage -Type ERROR -Message  "Parameter `"-Silence`" cannot be used with this option as the feature is interactive. Please remove the `"-Silence`" flag and re-run the command.  Exiting."
             Exit-WithCode -ExitCode $Script:ExitCodes.INVALID_ARGUMENTS
         } elseif (-not $JsonOutput) {
@@ -9758,7 +9909,7 @@ switch ($true) {
                 } else {
                     if ($Silence) {
                          # Re-enable logging to log the following error message.
-                        $Script:logOnly = "disabled"
+                        $Script:logOnly = $false
                         Write-LogMessage -Type ERROR -Message "Parameter `"-Silence`" cannot be used with serialized processing. Please remove the `"-Silence`" flag and re-run the command.  Exiting."
                         Exit-WithCode -ExitCode $Script:ExitCodes.INVALID_ARGUMENTS
                     } else {
@@ -9865,21 +10016,16 @@ switch ($true) {
         if ($JsonInput) {
             $JsonInputExists = Test-Path $JsonInput
             if ($JsonInputExists) {
-                # Build a dispatch key from the two boolean flags.
-                $transitionKey = "$([int][bool]$Parallel)_$([int][bool]$hostRemediationOptionsExists)"
-                switch ($transitionKey) {
-                    "1_1" {
-                        # First make sure that the HostRemediationOptionsFile is valid.
-                        Invoke-HostRemediationOptionsConfig -Action Check -HostRemediationOptionsJson $HostRemediationOptionsFile
-                        Invoke-TransitionBaselineManagedResource -JsonInputFile $JsonInput -Parallel -HostRemediationOptionsJson $HostRemediationOptionsFile
-                    }
-                    "1_0" { Invoke-TransitionBaselineManagedResource -JsonInputFile $JsonInput -Parallel }
-                    "0_0" { Invoke-TransitionBaselineManagedResource -JsonInputFile $JsonInput }
-                    "0_1" {
-                        # First make sure that the HostRemediationOptionsFile is valid.
-                        Invoke-HostRemediationOptionsConfig -Action Check -HostRemediationOptionsJson $HostRemediationOptionsFile
-                        Invoke-TransitionBaselineManagedResource -JsonInputFile $JsonInput -HostRemediationOptionsJson $HostRemediationOptionsFile
-                    }
+                if ($Parallel -and $hostRemediationOptionsExists) {
+                    Invoke-HostRemediationOptionsConfig -Action Check -HostRemediationOptionsJson $HostRemediationOptionsFile
+                    Invoke-TransitionBaselineManagedResource -JsonInputFile $JsonInput -Parallel -HostRemediationOptionsJson $HostRemediationOptionsFile
+                } elseif ($Parallel) {
+                    Invoke-TransitionBaselineManagedResource -JsonInputFile $JsonInput -Parallel
+                } elseif ($hostRemediationOptionsExists) {
+                    Invoke-HostRemediationOptionsConfig -Action Check -HostRemediationOptionsJson $HostRemediationOptionsFile
+                    Invoke-TransitionBaselineManagedResource -JsonInputFile $JsonInput -HostRemediationOptionsJson $HostRemediationOptionsFile
+                } else {
+                    Invoke-TransitionBaselineManagedResource -JsonInputFile $JsonInput
                 }
             }
         } elseif ((-not $ResourceName) -or (-not $WorkloadDomainName) -or (-not $ResourceType)) {
@@ -9906,7 +10052,7 @@ switch ($true) {
 
     default {
         # If no options specified, enter interactive mode.
-        $Script:Headless = 'disabled'
+        $Script:Headless = $false
         Show-MainMenu
     }
 }
