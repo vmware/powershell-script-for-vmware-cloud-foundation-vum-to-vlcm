@@ -9735,7 +9735,7 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
 }
 # Powershell 7.2 is the minimum required for the script to function, however, 7.2 is EOS.
 $pSVersionMinVersion = '7.2'
-$minimumVcfPowerCliVersion = '9.1.0.25230622'
+$minimumVcfPowerCliVersion = '9.1.0.25380678'
 $minimumVcfRelease = '5.2.2.0'
 $minimumSahRelease = '9.1.0.0'
 $minimumImageCatalogSupportRelease = '9.0.0.0'
