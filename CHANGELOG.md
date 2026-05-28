@@ -1,5 +1,10 @@
 # Release History
 
+## 1.0.0.0.61
+
+* Support for Standalone hosts (SAH)
+* Misc bug fixes and error handling improvements
+
 ## 1.0.0.0.60
 
 * Image seeding support.
