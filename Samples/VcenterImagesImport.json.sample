@@ -1,10 +1,10 @@
 [
   {
     "VcenterImageName": "esx-803-vendor1",
-    "VcenterName": "sfo-m01-vc01.sfo.rainpole.io"
+    "VcenterName": "vc01.example.com"
   },
   {
     "VcenterImageName": "esx-803-vendor2",
-    "VcenterName": "sfo-w01-vc01.sfo.rainpole.io"
+    "VcenterName": "vc01.example.com"
   }
 ]

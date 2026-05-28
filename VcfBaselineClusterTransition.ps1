@@ -617,7 +617,7 @@
                      OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
                      THE SOFTWARE.
 
-    Last Modified  : 2026-04-25
+    Last Modified  : 2026-05-28
 
 .LINK
     Knowledge Base Article:
@@ -1772,7 +1772,7 @@ Function Test-TaskStatus {
     Param (
         [Parameter(Mandatory = $true)] [ValidateNotNullOrEmpty()] $Response,
         [Parameter(Mandatory = $false)] [String]$ResourceName,
-        [Parameter(Mandatory = $false)] [String]$ResourceType,
+        [Parameter(Mandatory = $false)] [ValidateSet("Cluster", "Standalone Host", "Standalone Host Batch")] [String]$ResourceType,
         [Parameter(Mandatory = $false)] [String]$WorkloadDomainName
     )
 
@@ -2634,6 +2634,51 @@ Function Get-SddcManagerAccessTokenExpiry {
         TtlMinutes = $timeToExpiry.TotalMinutes
     }
 }
+
+Function Test-PowerCliMultipleVIServerMode {
+
+    <#
+        .SYNOPSIS
+        Verifies that PowerCLI is configured for simultaneous connections to multiple vCenters.
+
+        .DESCRIPTION
+        Checks DefaultVIServerMode across all PowerCLI configuration scopes. Exits the script if
+        Multiple mode is not configured. This check is deferred from startup to connection time so
+        the menu appears immediately; by the time Connect-Vcenter runs, VCF.PowerCLI is already
+        loaded by Connect-SddcManager, making Get-PowerCLIConfiguration fast.
+
+        .EXAMPLE
+        Test-PowerCliMultipleVIServerMode
+
+        .OUTPUTS
+        None
+    #>
+
+    [CmdletBinding()]
+    Param ()
+
+    Write-LogMessage -Type DEBUG -Message "Verifying PowerCLI DefaultVIServerMode is Multiple..."
+    try {
+        $anyMultipleMode = (Get-PowerCLIConfiguration -ErrorAction Stop).DefaultVIServerMode -contains "Multiple"
+    } catch {
+        if ($_.Exception.Message -match "is not recognized as a name of a cmdlet") {
+            Write-LogMessage -Type ERROR -Message "Cannot find Get-PowerCLIConfiguration. Please ensure VCF.PowerCLI $minimumVcfPowerCliVersion or later is installed."
+        } else {
+            Write-LogMessage -Type ERROR -Message "Get-PowerCLIConfiguration failed: $($_.Exception.Message)"
+        }
+        Exit-WithCode -ExitCode $Script:ExitCodes.PRECONDITION_ERROR
+    }
+
+    if (-not $anyMultipleMode) {
+        Write-LogMessage -Type EXCEPTION -Message "PowerCLI must be configured to connect to multiple vCenters simultaneously."
+        # Write-Host: guidance for corrective action uses Write-Host so the Set-PowerCLIConfiguration command is visible even when $Script:logOnly is set.
+        Write-Host "Run: Set-PowerCLIConfiguration -DefaultVIServerMode Multiple"
+        Exit-WithCode -ExitCode $Script:ExitCodes.PRECONDITION_ERROR
+    }
+
+    Write-LogMessage -Type DEBUG -Message "PowerCLI DefaultVIServerMode is Multiple."
+}
+
 Function Test-SddcManagerConnection {
 
     <#
@@ -2709,7 +2754,14 @@ Function Connect-Vcenter {
         This function does not return a value. It establishes vCenter connections or exits the script on failure.
     #>
 
+    [CmdletBinding()]
+    Param ()
+
     Write-LogMessage -Type DEBUG -Message "Entered Connect-Vcenter function..."
+
+    # Verify PowerCLI Multiple VIServer mode — deferred from startup so the menu appears immediately.
+    # VCF.PowerCLI is already loaded by this point (Connect-SddcManager ran first), so this is fast.
+    Test-PowerCliMultipleVIServerMode
 
     # Check if connected to SDDC Manager.
     Test-SddcManagerConnection
@@ -2779,6 +2831,7 @@ Function Connect-Vcenter {
             Remove-Variable -ErrorAction SilentlyContinue -Name VcenterPassword
             $vcenterCredential = New-Object System.Management.Automation.PSCredential($vcenterUserName, $secureVcenterPassword)
 
+            $ConnectedToVcenterServer = $null
             try {
                 $ConnectedToVcenterServer = Connect-VIServer -Server $VcenterName -Credential $vcenterCredential -ErrorAction Stop
             } catch {
@@ -2991,6 +3044,7 @@ Function Connect-Vcenter {
                     Remove-Variable -ErrorAction SilentlyContinue -Name isolatedWldSsoDomainUsername
                 }
 
+                $ConnectedToVcenterServer = $null
                 try {
                     $ConnectedToVcenterServer = Connect-VIServer -Server $VcenterName -Credential $vcenterCredential -ErrorAction Stop
                 } catch {
@@ -5723,6 +5777,15 @@ Function Wait-ComplianceCheckCompletion {
     Do {
         $preCheckTime = $([math]::Round(($processTimer.Elapsed.TotalSeconds), 0))
 
+        # Check for timeout before the API call so persistent network failures cannot bypass this guard.
+        if ($processTimer.Elapsed.TotalSeconds -gt $timeoutSeconds) {
+            Write-LogMessage -Type ERROR -PrependNewLine -Message "Compliance check for $displayName exceeded timeout of $([math]::Round($timeoutSeconds / 60, 0)) minutes. Current status: $taskStatus"
+            Write-Progress -Completed
+            Stop-ProcessTimer -Timer $processTimer -Operation "$operationName (TIMEOUT)" -Interval "Minutes"
+            $timedOut = $true
+            break  # Exit the Do-While loop.
+        }
+
         # Query task status with error handling (shared 404 mapping with transition poll loops).
         $taskFetch = Get-VcfTaskStateOrCompletedFromQueue -TaskId $TaskId
         if ($taskFetch.HadApiFailure) {
@@ -5739,15 +5802,6 @@ Function Wait-ComplianceCheckCompletion {
         }
         $taskResponse = $taskFetch.TaskResponse
         $taskStatus = $taskFetch.TaskStatus
-
-        # Check for timeout condition.
-        if ($processTimer.Elapsed.TotalSeconds -gt $timeoutSeconds) {
-            Write-LogMessage -Type ERROR -PrependNewLine -Message "Compliance check for $displayName exceeded timeout of $([math]::Round($timeoutSeconds / 60, 0)) minutes. Current status: $taskStatus"
-            Write-Progress -Completed
-            Stop-ProcessTimer -Timer $processTimer -Operation "$operationName (TIMEOUT)" -Interval "Minutes"
-            $timedOut = $true
-            break  # Exit the Do-While loop.
-        }
 
         # Ensure access token has sufficient TTL before continuing.
         Test-SddcManagerConnection
@@ -6169,6 +6223,11 @@ Function Invoke-ImageComplianceCheck {
             }
         } while ($selectedResourceDetails.Count -eq 0)
 
+        if ($selectedResourceDetails.Count -eq 0) {
+            Show-MainMenu
+            return
+        }
+
         # --- INTERACTIVE MODE: Image Seeding Eligibility Check ---
         # Image seeding allows auto-generation of vLCM images from baseline configurations.
         # Requires all selected resources and their vCenters to be at version 8.0.3 or later.
@@ -6240,6 +6299,11 @@ Function Invoke-ImageComplianceCheck {
                 Write-LogMessage -Type ERROR -Message "Invalid Id $idSelection chosen. Please try again."
             }
         } while (($SddcManagerImageName -eq "ERROR_INVALID_SELECTION"))
+
+        if ([String]::IsNullOrEmpty($SddcManagerImageName)) {
+            Show-MainMenu
+            return
+        }
         }
     } else {
         # --- HEADLESS MODE: JSON or Command-line Parameters ---
@@ -7591,7 +7655,7 @@ Function Wait-TransitionCompletion {
     Param (
         [Parameter(Mandatory = $false)] [ValidateRange(5, 86400)] [Int]$PollingIntervalSeconds = 5,
         [Parameter(Mandatory = $true)] [ValidateNotNullOrEmpty()] [String]$ResourceName,
-        [Parameter(Mandatory = $true)] [ValidateNotNullOrEmpty()] [String]$ResourceType,
+        [Parameter(Mandatory = $true)] [ValidateSet("Cluster", "Standalone Host")] [String]$ResourceType,
         [Parameter(Mandatory = $true)] [ValidateNotNullOrEmpty()] [String]$TaskId,
         [Parameter(Mandatory = $false)] [ValidateRange(30, 3600)] [Int]$TaskPollStallWarningSeconds = 300,
         [Parameter(Mandatory = $false)] [ValidateRange(300, 86400)] [Int]$TimeoutSeconds = 14400,
@@ -9100,11 +9164,22 @@ Function Get-InstalledPowerCliModules {
         The hashtable is keyed by module name; each value is the highest-version ModuleInfo object
         found on PSModulePath. Returns an empty hashtable if no matching modules are installed.
 
+        Results are cached in $Script:InstalledPowerCliModules for the lifetime of the session so
+        that Get-EnvironmentSetup and Get-Preconditions (both called at startup) share one scan.
+
         .OUTPUTS
         [hashtable]
         Keys: VCF.PowerCLI, VMware.PowerCLI, VMware.VimAutomation.Core, VMware.VimAutomation.Common,
         VMware.VimAutomation.Sdk. Any absent module is simply absent from the hashtable.
     #>
+
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    Param ()
+
+    if ($null -ne $Script:InstalledPowerCliModules) {
+        return $Script:InstalledPowerCliModules
+    }
 
     $moduleNames = @('VCF.PowerCLI', 'VMware.PowerCLI', 'VMware.VimAutomation.Core', 'VMware.VimAutomation.Common', 'VMware.VimAutomation.Sdk')
     $modules = @{}
@@ -9112,6 +9187,7 @@ Function Get-InstalledPowerCliModules {
         Sort-Object -Property Version -Descending |
         Group-Object -Property Name |
         ForEach-Object { $modules[$_.Name] = $_.Group[0] }
+    $Script:InstalledPowerCliModules = $modules
     return $modules
 }
 
@@ -9213,6 +9289,7 @@ Function Get-Preconditions {
         This function does not return a value. It checks preconditions and exits if any fail.
    #>
 
+    [CmdletBinding()]
     Param (
         [Parameter(Mandatory = $false)] [Switch]$SkipVersionCheck
     )
@@ -9283,94 +9360,15 @@ Function Get-Preconditions {
         Write-LogMessage -Type DEBUG -Message "VCF.PowerCLI version $installedVersion meets minimum requirement ($minimumVcfPowerCliVersion)."
     }
 
-    # Verify critical VCF.PowerCLI cmdlets are available. A single Get-Command call for all cmdlets
-    # is substantially faster than a per-cmdlet loop (1 call vs one per cmdlet).
-    Write-LogMessage -Type DEBUG -Message "Verifying VCF.PowerCLI cmdlet availability..."
-    $criticalCmdlets = @(
-        'Initialize-VcfClusterImageComplianceCheckSpec',
-        'Initialize-VcfClusterTransitionSpec',
-        'Initialize-VcfClusterUpdateSpec',
-        'Initialize-VcfDomainImageComplianceQuerySpec',
-        'Initialize-VcfDomainUpdateSpec',
-        'Initialize-VcfHostRemediationOptionsSpec',
-        'Initialize-VcfImageComplianceCheckSpec',
-        'Initialize-VcfPersonalityUploadSpec',
-        'Initialize-VcfPersonalityUploadSpecReferred',
-        'Initialize-VcfRemediationFailureAction',
-        'Initialize-VcfRemediationOptionsSpec',
-        'Initialize-VcfRepositoryImageQuerySpec',
-        'Initialize-VcfTransitionResourceSpec',
-        'Initialize-VcfTransitionSpec',
-        'Invoke-VcfDeletePersonality',
-        'Invoke-VcfGetApplianceInfo',
-        'Invoke-VcfGetCluster',
-        'Invoke-VcfGetClusterImageCompliance',
-        'Invoke-VcfGetClusters',
-        'Invoke-VcfGetCredentials',
-        'Invoke-VcfGetDomain',
-        'Invoke-VcfGetDomainCapabilitiesByDomainId',
-        'Invoke-VcfGetDomainImageComplianceQueryResponse',
-        'Invoke-VcfGetDomains',
-        'Invoke-VcfGetHost',
-        'Invoke-VcfGetHosts',
-        'Invoke-VcfGetPersonalities',
-        'Invoke-VcfGetPersonality',
-        'Invoke-VcfGetTask',
-        'Invoke-VcfGetTasks',
-        'Invoke-VcfGetVcenter',
-        'Invoke-VcfGetVcenters',
-        'Invoke-VcfInitiateRepositoryImagesQuery',
-        'Invoke-VcfQueryDomainImageCompliance',
-        'Invoke-VcfRetryTask',
-        'Invoke-VcfUpdateCluster',
-        'Invoke-VcfUpdateDomain',
-        'Invoke-VcfUploadPersonality'
-    )
-
-    # Skip cmdlet checks in test mode (for automated testing).
-    if ($env:PESTER_TEST_MODE -eq "1") {
-        Write-LogMessage -Type DEBUG -Message "Running in test mode - skipping VCF.PowerCLI cmdlet availability checks."
-    } else {
-        # Single Get-Command call for all cmdlets — Get-Command accepts an array of names and
-        # returns only the commands that exist, so the diff against $criticalCmdlets is the missing set.
-        [array]$foundCmdlets = @(Get-Command -Name $criticalCmdlets -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
-        [array]$missingCmdlets = @($criticalCmdlets | Where-Object { $_ -notin $foundCmdlets })
-
-        if ($missingCmdlets.Count -gt 0) {
-            Write-LogMessage -Type ERROR -Message "The following VCF.PowerCLI cmdlets are missing:"
-            foreach ($missing in $missingCmdlets) {
-                Write-LogMessage -Type ERROR -Message "  - $missing"
-            }
-            Write-LogMessage -Type ERROR -AppendNewLine -Message "Please ensure VCF.PowerCLI $minimumVcfPowerCliVersion or later is properly installed and loaded."
-            Exit-WithCode -ExitCode $Script:ExitCodes.PRECONDITION_ERROR
-        }
-
-        Write-LogMessage -Type DEBUG -Message "All critical VCF.PowerCLI cmdlets verified successfully."
-    }
-
-    # PowerCLI Configuration Check.
-    # Note: Get-PowerCLIConfiguration is slow (~4 seconds). We optimize by:
-    # 1. Using -Scope to limit the query
-    # 2. Checking only the specific property we need
-    try {
-        $userConfig = Get-PowerCLIConfiguration -Scope User -ErrorAction Stop
-        $sessionConfig = Get-PowerCLIConfiguration -Scope Session -ErrorAction Stop
-
-        $isMultipleMode = ($userConfig.DefaultVIServerMode -eq "Multiple") -or ($sessionConfig.DefaultVIServerMode -eq "Multiple")
-    } catch {
-        if ($_.Exception.Message -match "is not recognized as a name of a cmdlet") {
-            Write-LogMessage -Type ERROR -Message "Cannot find Get-PowerCLIConfiguration. You may need to reinstall PowerCLI."
-        } else {
-            Write-LogMessage -Type ERROR -Message "ERROR: $($_.Exception.Message)"
-        }
-        Exit-WithCode -ExitCode $Script:ExitCodes.PRECONDITION_ERROR
-    }
-
-    if (-not $isMultipleMode) {
-        Write-LogMessage -Type EXCEPTION -Message "PowerCLI must be configured to connect to multiple vCenters simultaneously."
-        Write-Host "Run: Set-PowerCLIConfiguration -DefaultVIServerMode Multiple"
-        Exit-WithCode -ExitCode $Script:ExitCodes.PRECONDITION_ERROR
-    }
+    # VCF.PowerCLI cmdlet availability is validated by the version check above.
+    # A verified minimum version guarantees the required cmdlets are present; calling Get-Command
+    # on the full cmdlet list forces a 26-second module assembly load on first run before the
+    # menu appears. Any missing cmdlet will surface at first use with a clear error message.
+    #
+    # Get-PowerCLIConfiguration (Multiple VIServer mode check) is deferred to Connect-Vcenter
+    # via Test-PowerCliMultipleVIServerMode. The VCF.PowerCLI module is already loaded by the
+    # time Connect-Vcenter runs (Connect-SddcManager uses Connect-VcfSddcManagerServer first),
+    # so the check takes milliseconds instead of forcing an early 26-second first-load here.
 
     $currentPSVersion = ($PSVersionTable.PSVersion.Major),($PSVersionTable.PSVersion.Minor) -join "."
 
@@ -9605,7 +9603,7 @@ Function Show-MainMenu {
         Write-Host -Object "$connectionBanner" -ForegroundColor Green
         Write-Host -Object " 2. Import vLCM images from vCenter(s) into SDDC Manager." -ForegroundColor White
         Write-Host -Object " 3. Check existing cluster(s)/standalone host(s)' vLCM image compliance." -ForegroundColor White
-        Write-Host -Object " 4. Transition vLCM baseline (VUM) cluster/standalone host to vLCM image management." -ForegroundColor White
+        Write-Host -Object " 4. Transition vLCM baseline cluster/standalone host to vLCM image management." -ForegroundColor White
         Write-Host -Object " 5. (Optional) Disconnect from vCenter(s) and SDDC Manager." -ForegroundColor White
         Write-Host -Object " 6. (Optional) Retry incomplete transition tasks." -ForegroundColor White
         Write-Host -Object " 7. (Optional) Delete SDDC Manager image." -ForegroundColor White
@@ -9742,6 +9740,7 @@ $minimumImageCatalogSupportRelease = '9.0.0.0'
 $clusterVsphereImageSeedingSupport = "8.0.3"
 $standAloneHostVsphereImageSeedingSupport = "8.0.3"
 $Script:logOnly = $false
+$Script:InstalledPowerCliModules = $null
 
 New-LogFile
 Get-Preconditions -SkipVersionCheck:$SkipPowercliVersionCheck
