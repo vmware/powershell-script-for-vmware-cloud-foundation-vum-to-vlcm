@@ -1,0 +1,29 @@
+[
+  {
+    "ResourceName": "esxi-10.example.com",
+    "ResourceType": "Standalone Host",
+    "WorkloadDomainName": "m01"
+  },
+  {
+    "ResourceName": "esxi-7.example.com",
+    "ResourceType": "Standalone Host",
+    "WorkloadDomainName": "m01"
+  },
+  {
+    "ResourceName": "esxi-8.example.com",
+    "ResourceType": "Standalone Host",
+    "WorkloadDomainName": "m01",
+    "SddcManagerImageName": "esx-803"
+  },
+  {
+    "ResourceName": "esxi-9.example.com",
+    "ResourceType": "Standalone Host",
+    "WorkloadDomainName": "m01",
+    "SddcManagerImageName": "esx-803"
+  },
+  { 
+    "ResourceName": "m01-cl01",
+    "ResourceType": "Cluster",
+    "WorkloadDomainName": "m01"
+  }
+]
