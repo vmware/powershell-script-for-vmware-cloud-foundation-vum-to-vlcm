@@ -617,7 +617,7 @@
                      OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
                      THE SOFTWARE.
 
-    Last Modified  : 2026-05-28
+    Last Modified  : 2026-06-02
 
 .LINK
     Knowledge Base Article:
@@ -712,7 +712,7 @@ Param (
 
 Set-StrictMode -Version 2
 
-$scriptVersion = '1.0.0.61'
+$scriptVersion = '1.0.0.62'
 
 # Initialize log level configuration (imported from OneNodeDeployment.ps1)
 $Script:configuredLogLevel = $LogLevel.ToUpper()
@@ -2759,6 +2759,9 @@ Function Connect-Vcenter {
 
     Write-LogMessage -Type DEBUG -Message "Entered Connect-Vcenter function..."
 
+    # Force VxRail mode re-detection whenever a new vCenter connection is established.
+    $Script:vxRailModeDetected = $false
+
     # Verify PowerCLI Multiple VIServer mode — deferred from startup so the menu appears immediately.
     # VCF.PowerCLI is already loaded by this point (Connect-SddcManager ran first), so this is fast.
     Test-PowerCliMultipleVIServerMode
@@ -3071,16 +3074,8 @@ Function Connect-Vcenter {
 
     Write-Host ""
 
-    # Check if vCenter is managed by VxRail.
-    $sddcType = Get-SddcType
-    Write-LogMessage -Type INFO -SuppressOutputToScreen -Message "SDDC Mode for `"$Global:SddcManagerFqdn`" identified as `"$sddcType`"."
-    if ($sddcType -eq "VCF-VxRail") {
-        $Script:vxRailMode = $true
-        Write-LogMessage -Type DEBUG -Message "VxRail mode enabled (SDDC Type: $sddcType)."
-    } else {
-        $Script:vxRailMode = $false
-        Write-LogMessage -Type DEBUG -Message "VxRail mode disabled (SDDC Type: $sddcType)."
-    }
+    # Detect whether this SDDC is VxRail-managed and set $Script:vxRailMode accordingly.
+    Set-VxRailMode
 }
 Function Test-VcentersConnection {
 
@@ -3162,6 +3157,10 @@ Function Test-VcentersConnection {
     $ConnectedCount = $defaultViServersVal.Count
     $ConnectedVcenters = ($defaultViServersVal | ForEach-Object { $_.Name }) -join ", "
     Write-LogMessage -Type DEBUG -Message "vCenter connection verified. $ConnectedCount vCenter(s) connected: $ConnectedVcenters"
+    # Ensure vxRailMode reflects the current vCenter connections even when Connect-Vcenter was not called.
+    if (-not $Script:vxRailModeDetected) {
+        Set-VxRailMode
+    }
     return $true
 }
 #endregion
@@ -5661,13 +5660,15 @@ Function Get-SddcType {
 
         .DESCRIPTION
         The function seeks to identify if the SDDC Type is VCF (VSRN) or VCF-VxRail (VxRail) and returns the value.
+        All connected vCenters are queried; "VCF-VxRail" is returned immediately if any vCenter reports that type,
+        preventing a non-VxRail vCenter from masking the true deployment type in multi-vCenter environments.
 
         .EXAMPLE
         Get-SddcType
 
         .OUTPUTS
         String
-        Returns the SDDC type: "VxRail" or "Standard VCF".
+        Returns the SDDC type: "VCF-VxRail" or the first non-null type found, or "NONE" for non-VCF environments.
     #>
 
     # Check if connected to SDDC Manager.
@@ -5675,16 +5676,56 @@ Function Get-SddcType {
 
     Test-SddcManagerConnection
 
+    $firstNonNullType = $null
     foreach ($vcenter in $Global:DefaultVIServers) {
-        $sddcType = (Get-AdvancedSetting -Server $vcenter -Entity $vcenter | Where-Object {$_.Name -match "config.SDDC.Deployed.Type"}).Value
-        # Return as soon as an SDDC type is found.
-        if ($sddcType) {
+        try {
+            $sddcType = (Get-AdvancedSetting -Server $vcenter -Entity $vcenter -ErrorAction Stop | Where-Object {$_.Name -eq "config.SDDC.Deployed.Type"}).Value
+        } catch {
+            Write-LogMessage -Type WARNING -Message "Could not retrieve SDDC type from vCenter `"$($vcenter.Name)`": $($_.Exception.Message)"
+            continue
+        }
+        # A VxRail identification from any vCenter takes precedence over all other responses.
+        if ($sddcType -eq "VCF-VxRail") {
             return $sddcType
+        }
+        if ($sddcType -and -not $firstNonNullType) {
+            $firstNonNullType = $sddcType
         }
     }
 
-    # Fail safe if no SDDC type is found (returns "NONE" for non-VCF environments).
+    # Return the first non-null type found, or "NONE" for non-VCF environments.
+    if ($firstNonNullType) {
+        return $firstNonNullType
+    }
     return "NONE"
+}
+
+Function Set-VxRailMode {
+
+    <#
+        .SYNOPSIS
+        Queries the SDDC type and updates $Script:vxRailMode accordingly.
+
+        .DESCRIPTION
+        Calls Get-SddcType against all connected vCenters and sets $Script:vxRailMode to $true when any
+        vCenter reports "VCF-VxRail". Extracted as a shared helper so that both Connect-Vcenter and
+        Test-VcentersConnection ensure the flag is accurate regardless of which code path established
+        the vCenter connections.
+
+        .EXAMPLE
+        Set-VxRailMode
+    #>
+
+    $sddcType = Get-SddcType
+    Write-LogMessage -Type INFO -SuppressOutputToScreen -Message "SDDC Mode for `"$Global:SddcManagerFqdn`" identified as `"$sddcType`"."
+    if ($sddcType -eq "VCF-VxRail") {
+        $Script:vxRailMode = $true
+        Write-LogMessage -Type DEBUG -Message "VxRail mode enabled (SDDC Type: $sddcType)."
+    } else {
+        $Script:vxRailMode = $false
+        Write-LogMessage -Type DEBUG -Message "VxRail mode disabled (SDDC Type: $sddcType)."
+    }
+    $Script:vxRailModeDetected = $true
 }
 Function Wait-ComplianceCheckCompletion {
 
@@ -9763,8 +9804,7 @@ $Script:Headless = $true
 
 # Initialize VxRail mode detection (set to False until Connect-Vcenter determines otherwise).
 $Script:vxRailMode = $false
-
-# Default credentials file.
+$Script:vxRailModeDetected = $false
 $sddcManagerCredentialsJson = Join-Path -Path $PSScriptRoot -ChildPath "SddcManagerCredentials.json"
 
 # If Silence is set, the Write-LogMessage function will not send output to the screen.

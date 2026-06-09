@@ -1,11 +1,15 @@
 # Release History
 
-## 1.0.0.0.61
+## 1.0.0.62
+
+* Resolve VxRail bug
+
+## 1.0.0.61
 
 * Support for Standalone hosts (SAH)
 * Misc bug fixes and error handling improvements
 
-## 1.0.0.0.60
+## 1.0.0.60
 
 * Image seeding support.
 * Added VCF 5.2.2 support for VSRN and VxRail.
@@ -13,10 +17,10 @@
 * Fix regression with handling of image library support.
 * Improve error messages for Connect-VcfSddcManagerServer not loaded.
 
-## 1.0.0.0.59
+## 1.0.0.59
 
 * Fixed issue to catch insecure connection error.
 
-## v1.0.0.0.58
+## v1.0.0.58
 
 * Fixed VCF.PowerVCF 9.0 compatibility issue with task parsing.
