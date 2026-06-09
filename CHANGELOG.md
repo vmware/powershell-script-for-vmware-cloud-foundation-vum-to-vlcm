@@ -1,5 +1,9 @@
 # Release History
 
+## 1.0.0.0.62
+
+* Resolve VxRail bug
+
 ## 1.0.0.0.61
 
 * Support for Standalone hosts (SAH)
