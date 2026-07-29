@@ -2,7 +2,7 @@
 
 ## 1.0.0.63
 
-* Fixed undefined resource bug (domain properties that did not exit)
+* Fixed undefined resource bug (domain properties that did not exist)
 
 ## 1.0.0.62
 
