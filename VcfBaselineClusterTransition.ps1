@@ -510,7 +510,7 @@
 
 .NOTES
     File Name      : VcfBaselineClusterTransition.ps1
-    Version        : 1.0.0.0.61
+    Version        : 1.0.0.63
     Author         : Broadcom
     Prerequisite   : PowerShell 7.2 or later
                      VCF.PowerCLI 9.1.0 or later (VMware.PowerCLI not supported)
@@ -617,7 +617,7 @@
                      OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
                      THE SOFTWARE.
 
-    Last Modified  : 2026-06-02
+    Last Modified  : 2026-07-29
 
 .LINK
     Knowledge Base Article:
@@ -636,7 +636,7 @@
     https://techdocs.broadcom.com/us/en/vmware-cis/vsphere/vsphere/8-0/managing-host-and-cluster-lifecycle-8-0.html
 #>
 
-# Copyright (c) 2025 Broadcom. All Rights Reserved.
+# Copyright (c) 2026 Broadcom. All Rights Reserved.
 # Broadcom Confidential. The term "Broadcom" refers to Broadcom Inc.
 # and/or its subsidiaries.
 #
@@ -663,11 +663,6 @@
 # DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
-####
-#
-# Last Modified: 2026-04-25
-#
-####
 
 [CmdletBinding()]
 Param (
@@ -712,7 +707,7 @@ Param (
 
 Set-StrictMode -Version 2
 
-$scriptVersion = '1.0.0.62'
+$scriptVersion = '1.0.0.63'
 
 # Initialize log level configuration (imported from OneNodeDeployment.ps1)
 $Script:configuredLogLevel = $LogLevel.ToUpper()
@@ -3227,36 +3222,49 @@ Function Get-BaselineManagedResourceList {
     Write-LogMessage -Type DEBUG -Message "Found $($clusters.Count) total cluster(s), filtering for baseline-managed clusters..."
 
     if ($clusters) {
-        # Cache domain lookups to avoid redundant API calls.
-        Write-LogMessage -Type DEBUG -Message "Caching workload domain details for $($clusters.Count) cluster(s)..."
-        $domainCache = @{}
-        $uniqueDomainIds = $clusters.Domain.Id | Select-Object -Unique
+        # Filter out clusters without valid Domain properties
+        $validClusters = @($clusters | Where-Object { $null -ne $_.Domain -and $null -ne $_.Domain.Id })
 
-        foreach ($domainId in $uniqueDomainIds) {
-            if (-not $domainCache.ContainsKey($domainId)) {
-                try {
-                    $domainName = (Invoke-VcfGetDomain -id $domainId -ErrorAction Stop).Name
-                } catch {
-                    Write-LogMessage -Type WARNING -Message "Could not retrieve workload domain details for domain ID `"$domainId`": $($_.Exception.Message)"
-                    $domainName = $null
+        if ($validClusters.Count -gt 0) {
+            # Cache domain lookups to avoid redundant API calls.
+            Write-LogMessage -Type DEBUG -Message "Caching workload domain details for $($validClusters.Count) cluster(s) with valid domain references..."
+            $domainCache = @{}
+            $uniqueDomainIds = @($validClusters.Domain.Id | Select-Object -Unique)
+
+            foreach ($domainId in $uniqueDomainIds) {
+                if (-not $domainCache.ContainsKey($domainId)) {
+                    try {
+                        $domainName = (Invoke-VcfGetDomain -id $domainId -ErrorAction Stop).Name
+                    } catch {
+                        Write-LogMessage -Type WARNING -Message "Could not retrieve workload domain details for domain ID `"$domainId`": $($_.Exception.Message)"
+                        $domainName = $null
+                    }
+                    $domainCache[$domainId] = $domainName
+                    Write-LogMessage -Type DEBUG -Message "Cached workload domain details: WLD Name: `"$domainName`" (WLD ID: `"$domainId`")"
                 }
-                $domainCache[$domainId] = $domainName
-                Write-LogMessage -Type DEBUG -Message "Cached workload domain details: WLD Name: `"$domainName`" (WLD ID: `"$domainId`")"
             }
+
+            # Process each cluster using cached data.
+            foreach ($cluster in $validClusters) {
+                if ($null -ne $cluster.Domain -and $null -ne $cluster.Domain.Id) {
+                    $resources += [pscustomobject]@{
+                        WorkloadDomainId   = $cluster.Domain.Id
+                        WorkloadDomainName = $domainCache[$cluster.Domain.Id]
+                        ResourceId         = $cluster.Id
+                        ResourceName       = $cluster.Name
+                        ResourceType       = "Cluster"
+                    }
+                }
+            }
+
+            Write-LogMessage -Type DEBUG -Message "Processed $($validClusters.Count) baseline-managed cluster(s)."
+        } else {
+            Write-LogMessage -Type DEBUG -Message "No clusters with valid domain references found."
         }
 
-        # Process each cluster using cached data.
-        foreach ($cluster in $clusters) {
-            $resources += [pscustomobject]@{
-                WorkloadDomainId   = $cluster.Domain.Id
-                WorkloadDomainName = $domainCache[$cluster.Domain.Id]
-                ResourceId         = $cluster.Id
-                ResourceName       = $cluster.Name
-                ResourceType       = "Cluster"
-            }
+        if ($validClusters.Count -lt $clusters.Count) {
+            Write-LogMessage -Type WARNING -Message "Skipped $($clusters.Count - $validClusters.Count) cluster(s) due to missing or invalid domain references."
         }
-
-        Write-LogMessage -Type DEBUG -Message "Processed $($clusters.Count) baseline-managed cluster(s)."
     }
 
     if (-not $clusters) {
@@ -3298,12 +3306,17 @@ Function Get-BaselineManagedResourceList {
                 continue
             }
 
-            $resources += [pscustomobject]@{
-                WorkloadDomainId   = $hostDetail.Domain.Id
-                WorkloadDomainName = $hostDetail.Domain.Name
-                ResourceId         = $hostDetail.Id
-                ResourceName       = $hostDetail.Fqdn
-                ResourceType       = "Standalone Host"
+            # Verify host has valid domain information before adding to resources
+            if ($null -ne $hostDetail.Domain -and $null -ne $hostDetail.Domain.Id) {
+                $resources += [pscustomobject]@{
+                    WorkloadDomainId   = $hostDetail.Domain.Id
+                    WorkloadDomainName = $hostDetail.Domain.Name
+                    ResourceId         = $hostDetail.Id
+                    ResourceName       = $hostDetail.Fqdn
+                    ResourceType       = "Standalone Host"
+                }
+            } else {
+                Write-LogMessage -Type DEBUG -Message "Skipping standalone host `"$($hostDetail.Fqdn)`" - missing or invalid domain reference."
             }
         }
 
