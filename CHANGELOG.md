@@ -1,5 +1,9 @@
 # Release History
 
+## 1.0.0.63
+
+* Fixed undefined resource bug (domain properties that did not exit)
+
 ## 1.0.0.62
 
 * Resolve VxRail bug
